@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <iomanip>
 
 namespace retrospect {
 
@@ -10,6 +11,8 @@ namespace retrospect {
 std::string PendingOp::description() const {
     switch (type) {
         case OpType::CaptureLoop:  return "Capture Loop";
+        case OpType::Record:       return "Record";
+        case OpType::StopRecord:   return "Stop Record";
         case OpType::Mute:         return "Mute";
         case OpType::Unmute:       return "Unmute";
         case OpType::ToggleMute:   return "Toggle Mute";
@@ -24,10 +27,15 @@ std::string PendingOp::description() const {
     return "Unknown";
 }
 
-LoopEngine::LoopEngine(int maxLoops, double lookbackSeconds, double sampleRate)
+LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
+                       double sampleRate, double minBpm)
     : metronome_(120.0, 4, sampleRate)
-    , ringBuffer_(static_cast<int64_t>(lookbackSeconds * sampleRate))
+    // Size ring buffer for maxLookbackBars at the slowest expected tempo.
+    // At minBpm, one beat = (60/minBpm) seconds, one bar = beatsPerBar beats.
+    , ringBuffer_(static_cast<int64_t>(
+          std::ceil(maxLookbackBars * 4 * (60.0 / minBpm) * sampleRate)))
     , loops_(static_cast<size_t>(maxLoops))
+    , maxLookbackBars_(maxLookbackBars)
     , sampleRate_(sampleRate)
 {
     for (int i = 0; i < maxLoops; ++i) {
@@ -51,6 +59,11 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
         // Write input to ring buffer
         ringBuffer_.write(&inSample, 1);
 
+        // Accumulate into active classic recording if one is in progress
+        if (activeRecording_) {
+            activeRecording_->buffer.push_back(inSample);
+        }
+
         // Check pending ops that should execute at or before this sample
         int64_t currentSample = metronome_.position().totalSamples;
 
@@ -68,7 +81,7 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
             if (!lp.isEmpty()) {
                 outSample += lp.processSample();
 
-                // Feed input to recording loops
+                // Feed input to overdub-recording loops
                 if (lp.isRecording()) {
                     lp.recordSample(inSample);
                 }
@@ -121,15 +134,18 @@ void LoopEngine::scheduleOp(OpType type, int loopIndex, Quantize quantize) {
 }
 
 void LoopEngine::scheduleCaptureLoop(int loopIndex, Quantize quantize,
-                                     double lookbackBars) {
+                                     double lookbackBarsOverride) {
     PendingOp op;
     op.type = OpType::CaptureLoop;
     op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
     op.quantize = quantize;
 
-    double bars = lookbackBars > 0 ? lookbackBars : lookbackBars_;
+    // Duration is always in whole bars
+    int bars = lookbackBarsOverride > 0
+        ? static_cast<int>(std::round(lookbackBarsOverride))
+        : lookbackBars_;
     op.lookbackSamples = static_cast<int64_t>(
-        std::round(bars * metronome_.samplesPerBar()));
+        std::round(static_cast<double>(bars) * metronome_.samplesPerBar()));
 
     if (quantize == Quantize::Free) {
         op.executeSample = metronome_.position().totalSamples;
@@ -177,6 +193,62 @@ void LoopEngine::scheduleSetSpeed(int loopIndex, double speed, Quantize quantize
     if (callbacks_.onStateChanged) callbacks_.onStateChanged();
 }
 
+void LoopEngine::scheduleRecord(int loopIndex, Quantize quantize) {
+    PendingOp op;
+    op.type = OpType::Record;
+    op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
+    op.quantize = quantize;
+
+    if (quantize == Quantize::Free) {
+        op.executeSample = metronome_.position().totalSamples;
+    } else {
+        op.executeSample = metronome_.position().totalSamples +
+                          metronome_.samplesUntilBoundary(quantize);
+    }
+
+    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
+        [](const PendingOp& a, const PendingOp& b) {
+            return a.executeSample < b.executeSample;
+        });
+    pendingOps_.insert(it, op);
+
+    std::ostringstream msg;
+    msg << "Record -> Loop " << op.loopIndex;
+    if (quantize != Quantize::Free) {
+        msg << " (pending: " << (quantize == Quantize::Beat ? "next beat" : "next bar") << ")";
+    }
+    lastMessage_ = msg.str();
+    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+}
+
+void LoopEngine::scheduleStopRecord(int loopIndex, Quantize quantize) {
+    PendingOp op;
+    op.type = OpType::StopRecord;
+    op.loopIndex = loopIndex;
+    op.quantize = quantize;
+
+    if (quantize == Quantize::Free) {
+        op.executeSample = metronome_.position().totalSamples;
+    } else {
+        op.executeSample = metronome_.position().totalSamples +
+                          metronome_.samplesUntilBoundary(quantize);
+    }
+
+    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
+        [](const PendingOp& a, const PendingOp& b) {
+            return a.executeSample < b.executeSample;
+        });
+    pendingOps_.insert(it, op);
+
+    std::string msg = "Stop Record (pending: ";
+    msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
+    msg += ")";
+    lastMessage_ = msg;
+    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+}
+
 void LoopEngine::executeOpNow(OpType type, int loopIndex) {
     PendingOp op;
     op.type = type;
@@ -187,7 +259,7 @@ void LoopEngine::executeOpNow(OpType type, int loopIndex) {
     if (type == OpType::CaptureLoop) {
         op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
         op.lookbackSamples = static_cast<int64_t>(
-            std::round(lookbackBars_ * metronome_.samplesPerBar()));
+            std::round(static_cast<double>(lookbackBars_) * metronome_.samplesPerBar()));
     }
 
     executeOp(op);
@@ -195,6 +267,16 @@ void LoopEngine::executeOpNow(OpType type, int loopIndex) {
 
 void LoopEngine::executeOp(const PendingOp& op) {
     int idx = op.loopIndex;
+
+    // Record/StopRecord have their own validation
+    if (op.type == OpType::Record) {
+        executeRecord(op);
+        return;
+    }
+    if (op.type == OpType::StopRecord) {
+        executeStopRecord(op);
+        return;
+    }
 
     // Validate index
     if (idx < 0 || idx >= maxLoops()) {
@@ -255,6 +337,9 @@ void LoopEngine::executeOp(const PendingOp& op) {
             lp.clear();
             lastMessage_ = "Loop " + std::to_string(idx) + " cleared";
             break;
+        case OpType::Record:
+        case OpType::StopRecord:
+            break; // Handled above
     }
 
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
@@ -268,7 +353,7 @@ void LoopEngine::executeCaptureLoop(const PendingOp& op) {
     int64_t lookback = op.lookbackSamples;
     if (lookback <= 0) {
         lookback = static_cast<int64_t>(
-            std::round(lookbackBars_ * metronome_.samplesPerBar()));
+            std::round(static_cast<double>(lookbackBars_) * metronome_.samplesPerBar()));
     }
 
     // Clamp to available data
@@ -288,9 +373,79 @@ void LoopEngine::executeCaptureLoop(const PendingOp& op) {
     lp.setLengthInBars(bars);
 
     std::ostringstream msg;
-    msg << "Loop " << idx << " captured (" << bars << " bars)";
+    msg << "Loop " << idx << " captured (" << static_cast<int>(std::round(bars)) << " bars)";
     lastMessage_ = msg.str();
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+}
+
+void LoopEngine::executeRecord(const PendingOp& op) {
+    int idx = op.loopIndex;
+    if (idx < 0 || idx >= maxLoops()) {
+        lastMessage_ = "No empty loop slot available";
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    if (activeRecording_) {
+        lastMessage_ = "Already recording on Loop " +
+                       std::to_string(activeRecording_->loopIndex);
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    // Clear the target loop if it has content
+    loops_[static_cast<size_t>(idx)].clear();
+
+    // Start accumulating input
+    ActiveRecording rec;
+    rec.loopIndex = idx;
+    rec.startSample = metronome_.position().totalSamples;
+    activeRecording_ = std::move(rec);
+
+    lastMessage_ = "Loop " + std::to_string(idx) + " recording...";
+    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+}
+
+void LoopEngine::executeStopRecord(const PendingOp& op) {
+    if (!activeRecording_) {
+        lastMessage_ = "No active recording";
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    int idx = activeRecording_->loopIndex;
+
+    // Ignore if the stop targets a different loop than what's recording
+    if (op.loopIndex >= 0 && op.loopIndex != idx) {
+        lastMessage_ = "Stop ignored: recording is on Loop " + std::to_string(idx);
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    if (activeRecording_->buffer.empty()) {
+        lastMessage_ = "No audio recorded";
+        activeRecording_.reset();
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    // Load the recorded audio into the loop
+    Loop& lp = loops_[static_cast<size_t>(idx)];
+    lp.loadFromCapture(std::move(activeRecording_->buffer));
+    lp.setCrossfadeSamples(crossfadeSamples_);
+
+    double bars = static_cast<double>(lp.lengthSamples()) / metronome_.samplesPerBar();
+    lp.setLengthInBars(bars);
+
+    activeRecording_.reset();
+
+    std::ostringstream msg;
+    msg << "Loop " << idx << " recorded ("
+        << std::fixed << std::setprecision(1) << bars << " bars)";
+    lastMessage_ = msg.str();
+    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
 }
 
 void LoopEngine::cancelPending() {
@@ -321,6 +476,15 @@ int LoopEngine::nextEmptySlot() const {
     for (int i = 0; i < maxLoops(); ++i) {
         if (loops_[static_cast<size_t>(i)].isEmpty()) return i;
     }
+    return -1;
+}
+
+void LoopEngine::setLookbackBars(int bars) {
+    lookbackBars_ = std::max(1, std::min(bars, maxLookbackBars_));
+}
+
+int LoopEngine::recordingLoopIndex() const {
+    if (activeRecording_) return activeRecording_->loopIndex;
     return -1;
 }
 

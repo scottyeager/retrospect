@@ -12,7 +12,8 @@
 static constexpr double kSampleRate = 44100.0;
 static constexpr int kBlockSize = 512;
 static constexpr int kMaxLoops = 8;
-static constexpr double kLookbackSeconds = 30.0;
+static constexpr int kMaxLookbackBars = 8;
+static constexpr double kMinBpm = 60.0;
 
 // TUI refresh rate (target ~30fps)
 static constexpr int kTuiRefreshMs = 33;
@@ -42,7 +43,7 @@ int main() {
     std::signal(SIGTERM, signalHandler);
 
     // Create engine
-    retrospect::LoopEngine engine(kMaxLoops, kLookbackSeconds, kSampleRate);
+    retrospect::LoopEngine engine(kMaxLoops, kMaxLookbackBars, kSampleRate, kMinBpm);
 
     // Create TUI
     retrospect::Tui tui(engine);

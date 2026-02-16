@@ -155,8 +155,15 @@ void Tui::drawMetronome(int row) {
         case Quantize::Beat: qmode = "BEAT"; break;
         case Quantize::Bar:  qmode = "BAR"; break;
     }
-    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %.0f bar(s)",
+    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)",
              qmode.c_str(), engine_.lookbackBars());
+
+    // Recording indicator
+    if (engine_.isRecording()) {
+        attron(COLOR_PAIR(3) | A_BOLD);
+        mvprintw(row + 2, 40, "** REC Loop %d **", engine_.recordingLoopIndex());
+        attroff(COLOR_PAIR(3) | A_BOLD);
+    }
 }
 
 void Tui::drawLoops(int startRow) {
@@ -185,22 +192,32 @@ void Tui::drawLoops(int startRow) {
         // State with color
         std::string stateStr;
         int colorPair = 5;
-        switch (lp.state()) {
-            case LoopState::Empty:
-                stateStr = "---      ";
-                break;
-            case LoopState::Playing:
-                stateStr = "PLAYING  ";
-                colorPair = 1;
-                break;
-            case LoopState::Muted:
-                stateStr = "MUTED    ";
-                colorPair = 2;
-                break;
-            case LoopState::Recording:
-                stateStr = "RECORDING";
-                colorPair = 3;
-                break;
+
+        // Check if this loop is being classic-recorded by the engine
+        bool classicRec = engine_.isRecording() &&
+                          engine_.recordingLoopIndex() == i;
+
+        if (classicRec) {
+            stateStr = "REC...   ";
+            colorPair = 3;
+        } else {
+            switch (lp.state()) {
+                case LoopState::Empty:
+                    stateStr = "---      ";
+                    break;
+                case LoopState::Playing:
+                    stateStr = "PLAYING  ";
+                    colorPair = 1;
+                    break;
+                case LoopState::Muted:
+                    stateStr = "MUTED    ";
+                    colorPair = 2;
+                    break;
+                case LoopState::Recording:
+                    stateStr = "OVERDUB  ";
+                    colorPair = 3;
+                    break;
+            }
         }
 
         attron(COLOR_PAIR(colorPair));
@@ -275,8 +292,8 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow, 0, "CONTROLS");
     attroff(A_BOLD);
 
-    mvprintw(startRow + 1, 2, "1-8: Select loop    SPACE: Capture loop    m: Mute/unmute");
-    mvprintw(startRow + 2, 2, "r: Reverse          o: Start overdub       O: Stop overdub");
+    mvprintw(startRow + 1, 2, "1-8: Select loop    SPACE: Capture loop    R: Record/stop");
+    mvprintw(startRow + 2, 2, "m: Mute/unmute      r: Reverse             o/O: Overdub on/off");
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
     mvprintw(startRow + 5, 2, "B/b: Lookback +/-   Esc: Cancel pending    q: Quit");
@@ -309,6 +326,16 @@ void Tui::handleKey(int key) {
         // Capture loop from ring buffer
         case ' ':
             engine_.scheduleCaptureLoop(selectedLoop_, q);
+            break;
+
+        // Classic record toggle
+        case 'R':
+            if (engine_.isRecording() &&
+                engine_.recordingLoopIndex() == selectedLoop_) {
+                engine_.scheduleStopRecord(selectedLoop_, q);
+            } else if (!engine_.isRecording()) {
+                engine_.scheduleRecord(selectedLoop_, q);
+            }
             break;
 
         // Mute/unmute
@@ -396,13 +423,13 @@ void Tui::handleKey(int key) {
 
         // Lookback bars adjust
         case 'B':
-            engine_.setLookbackBars(engine_.lookbackBars() + 1.0);
-            addMessage("Lookback: " + std::to_string(static_cast<int>(engine_.lookbackBars())) + " bar(s)");
+            engine_.setLookbackBars(engine_.lookbackBars() + 1);
+            addMessage("Lookback: " + std::to_string(engine_.lookbackBars()) + " bar(s)");
             break;
 
         case 'b':
-            engine_.setLookbackBars(std::max(1.0, engine_.lookbackBars() - 1.0));
-            addMessage("Lookback: " + std::to_string(static_cast<int>(engine_.lookbackBars())) + " bar(s)");
+            engine_.setLookbackBars(engine_.lookbackBars() - 1);
+            addMessage("Lookback: " + std::to_string(engine_.lookbackBars()) + " bar(s)");
             break;
 
         // Cancel pending

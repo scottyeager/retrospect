@@ -9,12 +9,15 @@
 #include <functional>
 #include <deque>
 #include <string>
+#include <optional>
 
 namespace retrospect {
 
 /// Types of operations that can be quantized
 enum class OpType {
     CaptureLoop,     // Capture from ring buffer and start playing
+    Record,          // Start classic recording (sets loop length)
+    StopRecord,      // Stop classic recording and start playback
     Mute,            // Mute a loop
     Unmute,          // Unmute a loop
     ToggleMute,      // Toggle mute state
@@ -50,6 +53,13 @@ struct EngineCallbacks {
     std::function<void(const MetronomePosition&)> onBar;
 };
 
+/// An in-progress classic recording (accumulating input in real time)
+struct ActiveRecording {
+    int loopIndex = -1;
+    std::vector<float> buffer;
+    int64_t startSample = 0;
+};
+
 /// Central engine managing loops, ring buffer, metronome, and quantized operations.
 ///
 /// In a real audio context, processBlock() is called from the audio callback.
@@ -57,11 +67,13 @@ struct EngineCallbacks {
 class LoopEngine {
 public:
     /// Create the engine with given settings.
+    /// Ring buffer is sized to hold maxLookbackBars at minBpm.
     /// @param maxLoops Maximum number of loops
-    /// @param lookbackSeconds Ring buffer lookback duration in seconds
+    /// @param maxLookbackBars Maximum lookback in bars
     /// @param sampleRate Audio sample rate
-    LoopEngine(int maxLoops = 8, double lookbackSeconds = 30.0,
-               double sampleRate = 44100.0);
+    /// @param minBpm Minimum expected BPM (used to size ring buffer)
+    LoopEngine(int maxLoops = 8, int maxLookbackBars = 8,
+               double sampleRate = 44100.0, double minBpm = 60.0);
 
     /// Process a block of audio. In real use, called from audio callback.
     /// @param input Input audio buffer (mono)
@@ -81,6 +93,12 @@ public:
     /// Schedule a speed change
     void scheduleSetSpeed(int loopIndex, double speed,
                           Quantize quantize = Quantize::Beat);
+
+    /// Schedule classic record start (quantized to boundary)
+    void scheduleRecord(int loopIndex, Quantize quantize);
+
+    /// Schedule classic record stop (quantized to boundary)
+    void scheduleStopRecord(int loopIndex, Quantize quantize);
 
     /// Execute an operation immediately (no quantization)
     void executeOpNow(OpType type, int loopIndex = -1);
@@ -110,9 +128,12 @@ public:
     Quantize defaultQuantize() const { return defaultQuantize_; }
     void setDefaultQuantize(Quantize q) { defaultQuantize_ = q; }
 
-    /// Lookback duration in bars for capture (0 = auto-detect based on content)
-    double lookbackBars() const { return lookbackBars_; }
-    void setLookbackBars(double bars) { lookbackBars_ = bars; }
+    /// Lookback duration in bars for capture
+    int lookbackBars() const { return lookbackBars_; }
+    void setLookbackBars(int bars);
+
+    /// Maximum lookback in bars (determines ring buffer size)
+    int maxLookbackBars() const { return maxLookbackBars_; }
 
     /// Global crossfade in samples
     int crossfadeSamples() const { return crossfadeSamples_; }
@@ -123,6 +144,10 @@ public:
     /// Monitoring: pass-through input to output
     bool inputMonitoring() const { return inputMonitoring_; }
     void setInputMonitoring(bool on) { inputMonitoring_ = on; }
+
+    /// Whether a classic recording is in progress
+    bool isRecording() const { return activeRecording_.has_value(); }
+    int recordingLoopIndex() const;
 
     /// Set callbacks
     void setCallbacks(EngineCallbacks cb);
@@ -136,14 +161,19 @@ public:
 private:
     void executeOp(const PendingOp& op);
     void executeCaptureLoop(const PendingOp& op);
+    void executeRecord(const PendingOp& op);
+    void executeStopRecord(const PendingOp& op);
 
     Metronome metronome_;
     RingBuffer ringBuffer_;
     std::vector<Loop> loops_;
     std::deque<PendingOp> pendingOps_;
 
+    std::optional<ActiveRecording> activeRecording_;
+
     Quantize defaultQuantize_ = Quantize::Bar;
-    double lookbackBars_ = 1.0;
+    int lookbackBars_ = 1;
+    int maxLookbackBars_;
     int crossfadeSamples_ = 256;
     double sampleRate_;
     bool inputMonitoring_ = false;
