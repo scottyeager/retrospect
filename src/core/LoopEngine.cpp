@@ -1,4 +1,5 @@
 #include "core/LoopEngine.h"
+#include "core/EngineCommand.h"
 #include <cstring>
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,7 @@ std::string PendingOp::description() const {
 LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
                        double sampleRate, double minBpm)
     : metronome_(120.0, 4, sampleRate)
+    , click_(sampleRate)
     // Size ring buffer for maxLookbackBars at the slowest expected tempo.
     // At minBpm, one beat = (60/minBpm) seconds, one bar = beatsPerBar beats.
     , ringBuffer_(static_cast<int64_t>(
@@ -45,6 +47,7 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
 
     // Wire metronome callbacks
     metronome_.onBeat([this](const MetronomePosition& pos) {
+        click_.trigger(pos.beat == 0);
         if (callbacks_.onBeat) callbacks_.onBeat(pos);
     });
     metronome_.onBar([this](const MetronomePosition& pos) {
@@ -53,6 +56,9 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
 }
 
 void LoopEngine::processBlock(const float* input, float* output, int numSamples) {
+    // Drain commands from TUI thread at the start of each block
+    drainCommands();
+
     for (int i = 0; i < numSamples; ++i) {
         float inSample = input ? input[i] : 0.0f;
 
@@ -88,6 +94,9 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
             }
         }
 
+        // Mix metronome click
+        outSample += click_.nextSample();
+
         // Input monitoring
         if (inputMonitoring_) {
             outSample += inSample;
@@ -100,169 +109,106 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
         // Advance metronome by 1 sample
         metronome_.advance(1);
     }
+
+    // Update display snapshot (non-blocking)
+    {
+        std::unique_lock<std::mutex> lock(displayMutex_, std::try_to_lock);
+        if (lock.owns_lock()) {
+            pendingOpsSnapshot_.assign(pendingOps_.begin(), pendingOps_.end());
+        }
+    }
 }
 
 void LoopEngine::scheduleOp(OpType type, int loopIndex, Quantize quantize) {
-    PendingOp op;
-    op.type = type;
-    op.loopIndex = loopIndex;
-    op.quantize = quantize;
+    EngineCommand cmd;
+    cmd.commandType = CommandType::ScheduleOp;
+    cmd.opType = type;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = quantize;
+    enqueueCommand(cmd);
 
-    if (quantize == Quantize::Free) {
-        op.executeSample = metronome_.position().totalSamples;
-    } else {
-        op.executeSample = metronome_.position().totalSamples +
-                          metronome_.samplesUntilBoundary(quantize);
-    }
-
-    // Insert sorted by execution time
-    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
-        [](const PendingOp& a, const PendingOp& b) {
-            return a.executeSample < b.executeSample;
-        });
-    pendingOps_.insert(it, op);
-
-    std::string msg = op.description();
+    // Generate message on TUI thread
+    PendingOp dummy;
+    dummy.type = type;
+    std::string msg = dummy.description();
     if (quantize != Quantize::Free) {
         msg += " (pending: ";
         msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
         msg += ")";
     }
-    lastMessage_ = msg;
     if (callbacks_.onMessage) callbacks_.onMessage(msg);
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
 }
 
 void LoopEngine::scheduleCaptureLoop(int loopIndex, Quantize quantize,
                                      double lookbackBarsOverride) {
-    PendingOp op;
-    op.type = OpType::CaptureLoop;
-    op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
-    op.quantize = quantize;
-
-    // Duration is always in whole bars
+    int targetLoop = loopIndex < 0 ? nextEmptySlot() : loopIndex;
     int bars = lookbackBarsOverride > 0
         ? static_cast<int>(std::round(lookbackBarsOverride))
         : lookbackBars_;
-    op.lookbackSamples = static_cast<int64_t>(
-        std::round(static_cast<double>(bars) * metronome_.samplesPerBar()));
 
-    if (quantize == Quantize::Free) {
-        op.executeSample = metronome_.position().totalSamples;
-    } else {
-        op.executeSample = metronome_.position().totalSamples +
-                          metronome_.samplesUntilBoundary(quantize);
-    }
-
-    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
-        [](const PendingOp& a, const PendingOp& b) {
-            return a.executeSample < b.executeSample;
-        });
-    pendingOps_.insert(it, op);
+    EngineCommand cmd;
+    cmd.commandType = CommandType::CaptureLoop;
+    cmd.loopIndex = targetLoop;
+    cmd.quantize = quantize;
+    cmd.lookbackBars = bars;
+    enqueueCommand(cmd);
 
     std::ostringstream msg;
-    msg << "Capture " << bars << " bar(s) -> Loop " << op.loopIndex;
+    msg << "Capture " << bars << " bar(s) -> Loop " << targetLoop;
     if (quantize != Quantize::Free) {
         msg << " (pending: " << (quantize == Quantize::Beat ? "next beat" : "next bar") << ")";
     }
-    lastMessage_ = msg.str();
-    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    if (callbacks_.onMessage) callbacks_.onMessage(msg.str());
 }
 
 void LoopEngine::scheduleSetSpeed(int loopIndex, double speed, Quantize quantize) {
-    PendingOp op;
-    op.type = OpType::SetSpeed;
-    op.loopIndex = loopIndex;
-    op.quantize = quantize;
-    op.speedValue = speed;
-
-    if (quantize == Quantize::Free) {
-        op.executeSample = metronome_.position().totalSamples;
-    } else {
-        op.executeSample = metronome_.position().totalSamples +
-                          metronome_.samplesUntilBoundary(quantize);
-    }
-
-    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
-        [](const PendingOp& a, const PendingOp& b) {
-            return a.executeSample < b.executeSample;
-        });
-    pendingOps_.insert(it, op);
-
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    EngineCommand cmd;
+    cmd.commandType = CommandType::SetSpeed;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = quantize;
+    cmd.value = speed;
+    enqueueCommand(cmd);
 }
 
 void LoopEngine::scheduleRecord(int loopIndex, Quantize quantize) {
-    PendingOp op;
-    op.type = OpType::Record;
-    op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
-    op.quantize = quantize;
+    int targetLoop = loopIndex < 0 ? nextEmptySlot() : loopIndex;
 
-    if (quantize == Quantize::Free) {
-        op.executeSample = metronome_.position().totalSamples;
-    } else {
-        op.executeSample = metronome_.position().totalSamples +
-                          metronome_.samplesUntilBoundary(quantize);
-    }
-
-    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
-        [](const PendingOp& a, const PendingOp& b) {
-            return a.executeSample < b.executeSample;
-        });
-    pendingOps_.insert(it, op);
+    EngineCommand cmd;
+    cmd.commandType = CommandType::Record;
+    cmd.loopIndex = targetLoop;
+    cmd.quantize = quantize;
+    enqueueCommand(cmd);
 
     std::ostringstream msg;
-    msg << "Record -> Loop " << op.loopIndex;
+    msg << "Record -> Loop " << targetLoop;
     if (quantize != Quantize::Free) {
         msg << " (pending: " << (quantize == Quantize::Beat ? "next beat" : "next bar") << ")";
     }
-    lastMessage_ = msg.str();
-    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    if (callbacks_.onMessage) callbacks_.onMessage(msg.str());
 }
 
 void LoopEngine::scheduleStopRecord(int loopIndex, Quantize quantize) {
-    PendingOp op;
-    op.type = OpType::StopRecord;
-    op.loopIndex = loopIndex;
-    op.quantize = quantize;
+    EngineCommand cmd;
+    cmd.commandType = CommandType::StopRecord;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = quantize;
+    enqueueCommand(cmd);
 
-    if (quantize == Quantize::Free) {
-        op.executeSample = metronome_.position().totalSamples;
-    } else {
-        op.executeSample = metronome_.position().totalSamples +
-                          metronome_.samplesUntilBoundary(quantize);
+    std::string msg = "Stop Record";
+    if (quantize != Quantize::Free) {
+        msg += " (pending: ";
+        msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
+        msg += ")";
     }
-
-    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
-        [](const PendingOp& a, const PendingOp& b) {
-            return a.executeSample < b.executeSample;
-        });
-    pendingOps_.insert(it, op);
-
-    std::string msg = "Stop Record (pending: ";
-    msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
-    msg += ")";
-    lastMessage_ = msg;
-    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    if (callbacks_.onMessage) callbacks_.onMessage(msg);
 }
 
 void LoopEngine::executeOpNow(OpType type, int loopIndex) {
-    PendingOp op;
-    op.type = type;
-    op.loopIndex = loopIndex;
-    op.quantize = Quantize::Free;
-    op.executeSample = metronome_.position().totalSamples;
-
     if (type == OpType::CaptureLoop) {
-        op.loopIndex = loopIndex < 0 ? nextEmptySlot() : loopIndex;
-        op.lookbackSamples = static_cast<int64_t>(
-            std::round(static_cast<double>(lookbackBars_) * metronome_.samplesPerBar()));
+        scheduleCaptureLoop(loopIndex, Quantize::Free);
+    } else {
+        scheduleOp(type, loopIndex, Quantize::Free);
     }
-
-    executeOp(op);
 }
 
 void LoopEngine::executeOp(const PendingOp& op) {
@@ -402,6 +348,9 @@ void LoopEngine::executeRecord(const PendingOp& op) {
     rec.startSample = metronome_.position().totalSamples;
     activeRecording_ = std::move(rec);
 
+    isRecordingAtomic_.store(true, std::memory_order_relaxed);
+    recordingLoopIdxAtomic_.store(idx, std::memory_order_relaxed);
+
     lastMessage_ = "Loop " + std::to_string(idx) + " recording...";
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
     if (callbacks_.onStateChanged) callbacks_.onStateChanged();
@@ -426,6 +375,8 @@ void LoopEngine::executeStopRecord(const PendingOp& op) {
     if (activeRecording_->buffer.empty()) {
         lastMessage_ = "No audio recorded";
         activeRecording_.reset();
+        isRecordingAtomic_.store(false, std::memory_order_relaxed);
+        recordingLoopIdxAtomic_.store(-1, std::memory_order_relaxed);
         if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
         return;
     }
@@ -439,6 +390,8 @@ void LoopEngine::executeStopRecord(const PendingOp& op) {
     lp.setLengthInBars(bars);
 
     activeRecording_.reset();
+    isRecordingAtomic_.store(false, std::memory_order_relaxed);
+    recordingLoopIdxAtomic_.store(-1, std::memory_order_relaxed);
 
     std::ostringstream msg;
     msg << "Loop " << idx << " recorded ("
@@ -449,10 +402,11 @@ void LoopEngine::executeStopRecord(const PendingOp& op) {
 }
 
 void LoopEngine::cancelPending() {
-    pendingOps_.clear();
-    lastMessage_ = "All pending ops cancelled";
-    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    EngineCommand cmd;
+    cmd.commandType = CommandType::CancelPending;
+    enqueueCommand(cmd);
+
+    if (callbacks_.onMessage) callbacks_.onMessage("All pending ops cancelled");
 }
 
 void LoopEngine::cancelPending(int loopIndex) {
@@ -493,6 +447,7 @@ void LoopEngine::setCallbacks(EngineCallbacks cb) {
 
     // Re-wire metronome callbacks to include the new ones
     metronome_.onBeat([this](const MetronomePosition& pos) {
+        click_.trigger(pos.beat == 0);
         if (callbacks_.onBeat) callbacks_.onBeat(pos);
     });
     metronome_.onBar([this](const MetronomePosition& pos) {
@@ -502,6 +457,96 @@ void LoopEngine::setCallbacks(EngineCallbacks cb) {
 
 std::string LoopEngine::statusMessage() const {
     return lastMessage_;
+}
+
+void LoopEngine::enqueueCommand(const EngineCommand& cmd) {
+    commandQueue_.push(cmd);
+}
+
+int64_t LoopEngine::computeExecuteSample(Quantize quantize) const {
+    if (quantize == Quantize::Free) {
+        return metronome_.position().totalSamples;
+    }
+    return metronome_.position().totalSamples +
+           metronome_.samplesUntilBoundary(quantize);
+}
+
+void LoopEngine::insertPendingOp(PendingOp op) {
+    auto it = std::lower_bound(pendingOps_.begin(), pendingOps_.end(), op,
+        [](const PendingOp& a, const PendingOp& b) {
+            return a.executeSample < b.executeSample;
+        });
+    pendingOps_.insert(it, op);
+}
+
+void LoopEngine::drainCommands() {
+    EngineCommand cmd;
+    while (commandQueue_.pop(cmd)) {
+        switch (cmd.commandType) {
+            case CommandType::ScheduleOp: {
+                PendingOp op;
+                op.type = cmd.opType;
+                op.loopIndex = cmd.loopIndex;
+                op.quantize = cmd.quantize;
+                op.executeSample = computeExecuteSample(cmd.quantize);
+                insertPendingOp(op);
+                break;
+            }
+            case CommandType::CaptureLoop: {
+                PendingOp op;
+                op.type = OpType::CaptureLoop;
+                op.loopIndex = cmd.loopIndex;
+                op.quantize = cmd.quantize;
+                op.lookbackSamples = static_cast<int64_t>(
+                    std::round(static_cast<double>(cmd.lookbackBars) *
+                               metronome_.samplesPerBar()));
+                op.executeSample = computeExecuteSample(cmd.quantize);
+                insertPendingOp(op);
+                break;
+            }
+            case CommandType::Record: {
+                PendingOp op;
+                op.type = OpType::Record;
+                op.loopIndex = cmd.loopIndex;
+                op.quantize = cmd.quantize;
+                op.executeSample = computeExecuteSample(cmd.quantize);
+                insertPendingOp(op);
+                break;
+            }
+            case CommandType::StopRecord: {
+                PendingOp op;
+                op.type = OpType::StopRecord;
+                op.loopIndex = cmd.loopIndex;
+                op.quantize = cmd.quantize;
+                op.executeSample = computeExecuteSample(cmd.quantize);
+                insertPendingOp(op);
+                break;
+            }
+            case CommandType::SetSpeed: {
+                PendingOp op;
+                op.type = OpType::SetSpeed;
+                op.loopIndex = cmd.loopIndex;
+                op.quantize = cmd.quantize;
+                op.speedValue = cmd.value;
+                op.executeSample = computeExecuteSample(cmd.quantize);
+                insertPendingOp(op);
+                break;
+            }
+            case CommandType::SetBpm: {
+                metronome_.setBpm(cmd.value);
+                break;
+            }
+            case CommandType::CancelPending: {
+                pendingOps_.clear();
+                break;
+            }
+        }
+    }
+}
+
+std::vector<PendingOp> LoopEngine::pendingOpsSnapshot() const {
+    std::lock_guard<std::mutex> lock(displayMutex_);
+    return pendingOpsSnapshot_;
 }
 
 } // namespace retrospect

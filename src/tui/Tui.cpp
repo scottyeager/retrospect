@@ -93,10 +93,10 @@ void Tui::draw() {
     row += engine_.maxLoops() + 2;
 
     drawPendingOps(row);
-    row += static_cast<int>(std::min(engine_.pendingOps().size(), size_t(3))) + 2;
+    row += static_cast<int>(std::min(engine_.pendingOpsSnapshot().size(), size_t(3))) + 2;
 
     drawControls(row);
-    row += 6;
+    row += 7;
 
     drawMessages(row);
 
@@ -155,13 +155,14 @@ void Tui::drawMetronome(int row) {
         case Quantize::Beat: qmode = "BEAT"; break;
         case Quantize::Bar:  qmode = "BAR"; break;
     }
-    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)",
-             qmode.c_str(), engine_.lookbackBars());
+    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s",
+             qmode.c_str(), engine_.lookbackBars(),
+             engine_.metronomeClickEnabled() ? "ON" : "OFF");
 
     // Recording indicator
-    if (engine_.isRecording()) {
+    if (engine_.isRecordingAtomic()) {
         attron(COLOR_PAIR(3) | A_BOLD);
-        mvprintw(row + 2, 40, "** REC Loop %d **", engine_.recordingLoopIndex());
+        mvprintw(row + 2, 40, "** REC Loop %d **", engine_.recordingLoopIdxAtomic());
         attroff(COLOR_PAIR(3) | A_BOLD);
     }
 }
@@ -194,8 +195,8 @@ void Tui::drawLoops(int startRow) {
         int colorPair = 5;
 
         // Check if this loop is being classic-recorded by the engine
-        bool classicRec = engine_.isRecording() &&
-                          engine_.recordingLoopIndex() == i;
+        bool classicRec = engine_.isRecordingAtomic() &&
+                          engine_.recordingLoopIdxAtomic() == i;
 
         if (classicRec) {
             stateStr = "REC...   ";
@@ -265,7 +266,7 @@ void Tui::drawPendingOps(int startRow) {
     mvprintw(startRow, 0, "PENDING");
     attroff(A_BOLD);
 
-    const auto& ops = engine_.pendingOps();
+    auto ops = engine_.pendingOpsSnapshot();
     if (ops.empty()) {
         mvprintw(startRow, 10, "(none)");
         return;
@@ -296,7 +297,8 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow + 2, 2, "m: Mute/unmute      r: Reverse             o/O: Overdub on/off");
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
-    mvprintw(startRow + 5, 2, "B/b: Lookback +/-   Esc: Cancel pending    q: Quit");
+    mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        Esc: Cancel pending");
+    mvprintw(startRow + 6, 2, "q: Quit");
 }
 
 void Tui::drawMessages(int startRow) {
@@ -330,19 +332,26 @@ void Tui::handleKey(int key) {
 
         // Classic record toggle
         case 'R':
-            if (engine_.isRecording() &&
-                engine_.recordingLoopIndex() == selectedLoop_) {
+            if (engine_.isRecordingAtomic() &&
+                engine_.recordingLoopIdxAtomic() == selectedLoop_) {
                 engine_.scheduleStopRecord(selectedLoop_, q);
-            } else if (!engine_.isRecording()) {
+            } else if (!engine_.isRecordingAtomic()) {
                 engine_.scheduleRecord(selectedLoop_, q);
             }
             break;
 
         // Mute/unmute
         case 'm':
-        case 'M':
             engine_.scheduleOp(OpType::ToggleMute, selectedLoop_, q);
             break;
+
+        // Toggle metronome click
+        case 'M': {
+            bool on = !engine_.metronomeClickEnabled();
+            engine_.setMetronomeClickEnabled(on);
+            addMessage(std::string("Metronome click: ") + (on ? "ON" : "OFF"));
+            break;
+        }
 
         // Reverse
         case 'r':

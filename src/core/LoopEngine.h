@@ -1,8 +1,10 @@
 #pragma once
 
 #include "core/Metronome.h"
+#include "core/MetronomeClick.h"
 #include "core/RingBuffer.h"
 #include "core/Loop.h"
+#include "core/SpscQueue.h"
 
 #include <vector>
 #include <memory>
@@ -10,6 +12,8 @@
 #include <deque>
 #include <string>
 #include <optional>
+#include <mutex>
+#include <atomic>
 
 namespace retrospect {
 
@@ -58,6 +62,27 @@ struct ActiveRecording {
     int loopIndex = -1;
     std::vector<float> buffer;
     int64_t startSample = 0;
+};
+
+/// Command types for the TUI→Audio SPSC queue
+enum class CommandType {
+    ScheduleOp,     // Generic op (mute, reverse, overdub, undo, redo, clear)
+    CaptureLoop,    // Capture from ring buffer
+    Record,         // Start classic recording
+    StopRecord,     // Stop classic recording
+    SetSpeed,       // Change loop playback speed
+    SetBpm,         // Change metronome BPM
+    CancelPending   // Cancel all pending ops
+};
+
+/// Command sent from TUI thread to audio thread
+struct EngineCommand {
+    CommandType commandType = CommandType::ScheduleOp;
+    OpType opType = OpType::Mute;       // For ScheduleOp
+    int loopIndex = -1;
+    Quantize quantize = Quantize::Bar;
+    double value = 0.0;                 // Speed or BPM
+    int lookbackBars = 1;               // For CaptureLoop
 };
 
 /// Central engine managing loops, ring buffer, metronome, and quantized operations.
@@ -124,6 +149,16 @@ public:
 
     const std::deque<PendingOp>& pendingOps() const { return pendingOps_; }
 
+    /// Thread-safe snapshot of pending ops (for TUI display)
+    std::vector<PendingOp> pendingOpsSnapshot() const;
+
+    /// Enqueue a command from the TUI thread (lock-free)
+    void enqueueCommand(const EngineCommand& cmd);
+
+    /// Atomic recording state accessors (safe to read from TUI thread)
+    bool isRecordingAtomic() const { return isRecordingAtomic_.load(std::memory_order_relaxed); }
+    int recordingLoopIdxAtomic() const { return recordingLoopIdxAtomic_.load(std::memory_order_relaxed); }
+
     /// Default quantization mode for new operations
     Quantize defaultQuantize() const { return defaultQuantize_; }
     void setDefaultQuantize(Quantize q) { defaultQuantize_ = q; }
@@ -145,6 +180,12 @@ public:
     bool inputMonitoring() const { return inputMonitoring_; }
     void setInputMonitoring(bool on) { inputMonitoring_ = on; }
 
+    /// Metronome click (audible beat indicator)
+    bool metronomeClickEnabled() const { return click_.isEnabled(); }
+    void setMetronomeClickEnabled(bool on) { click_.setEnabled(on); }
+    float metronomeClickVolume() const { return click_.volume(); }
+    void setMetronomeClickVolume(float v) { click_.setVolume(v); }
+
     /// Whether a classic recording is in progress
     bool isRecording() const { return activeRecording_.has_value(); }
     int recordingLoopIndex() const;
@@ -164,7 +205,17 @@ private:
     void executeRecord(const PendingOp& op);
     void executeStopRecord(const PendingOp& op);
 
+    /// Drain commands from the SPSC queue into pendingOps_ (audio thread)
+    void drainCommands();
+
+    /// Compute executeSample for a given quantize mode (audio thread)
+    int64_t computeExecuteSample(Quantize quantize) const;
+
+    /// Insert a PendingOp sorted by execution time
+    void insertPendingOp(PendingOp op);
+
     Metronome metronome_;
+    MetronomeClick click_;
     RingBuffer ringBuffer_;
     std::vector<Loop> loops_;
     std::deque<PendingOp> pendingOps_;
@@ -180,6 +231,15 @@ private:
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;
+
+    // Thread safety: TUI -> Audio command queue
+    SpscQueue<EngineCommand, 256> commandQueue_;
+
+    // Thread safety: Audio -> TUI display snapshot
+    mutable std::mutex displayMutex_;
+    std::vector<PendingOp> pendingOpsSnapshot_;
+    std::atomic<bool> isRecordingAtomic_{false};
+    std::atomic<int> recordingLoopIdxAtomic_{-1};
 };
 
 } // namespace retrospect
