@@ -69,15 +69,55 @@ private:
     retrospect::LoopEngine& engine_;
 };
 
-int main() {
+int main(int argc, char* argv[]) {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // Parse command-line arguments
+    juce::String preferredBackend;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+        if (arg == "--jack") {
+            preferredBackend = "JACK";
+        } else if (arg == "--alsa") {
+            preferredBackend = "ALSA";
+        } else if (arg == "--help" || arg == "-h") {
+            fprintf(stdout, "Usage: retrospect [OPTIONS]\n");
+            fprintf(stdout, "Options:\n");
+            fprintf(stdout, "  --jack    Use JACK audio backend\n");
+            fprintf(stdout, "  --alsa    Use ALSA audio backend\n");
+            fprintf(stdout, "  --help    Show this help message\n");
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            return 1;
+        }
+    }
 
     // JUCE requires this for AudioDeviceManager
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     // Set up audio device
     juce::AudioDeviceManager deviceManager;
+
+    // Set preferred audio backend if specified
+    if (preferredBackend.isNotEmpty()) {
+        auto& deviceTypes = deviceManager.getAvailableDeviceTypes();
+        bool found = false;
+        for (auto* deviceType : deviceTypes) {
+            if (deviceType->getTypeName().containsIgnoreCase(preferredBackend)) {
+                deviceManager.setCurrentAudioDeviceType(deviceType->getTypeName(), true);
+                fprintf(stderr, "Selected audio backend: %s\n", deviceType->getTypeName().toRawUTF8());
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "Warning: %s audio backend not found, using default\n",
+                    preferredBackend.toRawUTF8());
+        }
+    }
+
     auto error = deviceManager.initialise(1, 1, nullptr, true);
     if (error.isNotEmpty()) {
         fprintf(stderr, "Audio device error: %s\n", error.toRawUTF8());
