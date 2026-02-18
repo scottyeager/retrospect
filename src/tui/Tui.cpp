@@ -293,12 +293,12 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow, 0, "CONTROLS");
     attroff(A_BOLD);
 
-    mvprintw(startRow + 1, 2, "1-8: Select loop    SPACE: Capture loop    R: Record/stop");
-    mvprintw(startRow + 2, 2, "m: Mute/unmute      r: Reverse             o/O: Overdub on/off");
+    mvprintw(startRow + 1, 2, "1-8: Select loop    SPACE: Capture loop    r: Record/stop");
+    mvprintw(startRow + 2, 2, "m: Mute/unmute      v: Reverse             o/O: Overdub on/off");
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
-    mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        Esc: Cancel pending");
-    mvprintw(startRow + 6, 2, "q: Quit");
+    mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        t: Tap tempo");
+    mvprintw(startRow + 6, 2, "Esc: Cancel pending q: Quit");
 }
 
 void Tui::drawMessages(int startRow) {
@@ -331,7 +331,7 @@ void Tui::handleKey(int key) {
             break;
 
         // Classic record toggle
-        case 'R':
+        case 'r':
             if (engine_.isRecordingAtomic() &&
                 engine_.recordingLoopIdxAtomic() == selectedLoop_) {
                 engine_.scheduleStopRecord(selectedLoop_, q);
@@ -354,7 +354,7 @@ void Tui::handleKey(int key) {
         }
 
         // Reverse
-        case 'r':
+        case 'v':
             engine_.scheduleOp(OpType::Reverse, selectedLoop_, q);
             break;
 
@@ -441,6 +441,11 @@ void Tui::handleKey(int key) {
             addMessage("Lookback: " + std::to_string(engine_.lookbackBars()) + " bar(s)");
             break;
 
+        // Tap tempo
+        case 't':
+            handleTapTempo();
+            break;
+
         // Cancel pending
         case 27: // Escape
             engine_.cancelPending();
@@ -449,6 +454,43 @@ void Tui::handleKey(int key) {
         default:
             break;
     }
+}
+
+void Tui::handleTapTempo() {
+    auto now = std::chrono::steady_clock::now();
+
+    // Reset if too long since last tap
+    if (!tapTimes_.empty()) {
+        double elapsed = std::chrono::duration<double>(now - tapTimes_.back()).count();
+        if (elapsed > tapTimeoutSec_) {
+            tapTimes_.clear();
+        }
+    }
+
+    tapTimes_.push_back(now);
+
+    // Keep only the most recent taps
+    while (static_cast<int>(tapTimes_.size()) > maxTaps_) {
+        tapTimes_.erase(tapTimes_.begin());
+    }
+
+    // Need at least 2 taps to compute BPM
+    if (tapTimes_.size() < 2) {
+        addMessage("Tap tempo: tap again...");
+        return;
+    }
+
+    // Average the intervals
+    double totalSec = std::chrono::duration<double>(
+        tapTimes_.back() - tapTimes_.front()).count();
+    double avgInterval = totalSec / (tapTimes_.size() - 1);
+    double bpm = 60.0 / avgInterval;
+
+    engine_.metronome().setBpm(bpm);
+
+    std::ostringstream msg;
+    msg << std::fixed << std::setprecision(1) << "Tap tempo: " << bpm << " BPM";
+    addMessage(msg.str());
 }
 
 void Tui::addMessage(const std::string& msg) {

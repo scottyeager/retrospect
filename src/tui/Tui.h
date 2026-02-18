@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <deque>
+#include <chrono>
 
 namespace retrospect {
 
@@ -42,6 +43,7 @@ private:
     void drawControls(int startRow);
     void drawMessages(int startRow);
     void handleKey(int key);
+    void handleTapTempo();
 
     LoopEngine& engine_;
     int selectedLoop_ = 0;
@@ -54,6 +56,11 @@ private:
 
     int termWidth_ = 80;
     int termHeight_ = 24;
+
+    // Tap tempo state
+    std::vector<std::chrono::steady_clock::time_point> tapTimes_;
+    static constexpr int maxTaps_ = 8;
+    static constexpr double tapTimeoutSec_ = 2.0;
 };
 
 } // namespace retrospect

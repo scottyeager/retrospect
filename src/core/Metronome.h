@@ -77,7 +77,6 @@ public:
 
 private:
     void recalculate();
-    void updatePosition();
 
     double bpm_;
     int beatsPerBar_;
@@ -87,7 +86,13 @@ private:
     double samplesPerBeat_ = 0;
     double samplesPerBar_ = 0;
 
+    // Absolute sample counter (monotonically increasing, never adjusted)
     int64_t totalSamples_ = 0;
+
+    // Explicit beat tracking (decoupled from totalSamples_)
+    int currentBar_ = 0;
+    int currentBeat_ = 0;
+    double sampleInBeat_ = 0.0;  // samples elapsed within current beat
 
     BeatCallback beatCallback_;
     BarCallback barCallback_;
