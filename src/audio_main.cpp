@@ -1,5 +1,8 @@
 #include "core/LoopEngine.h"
 #include "tui/Tui.h"
+#include "client/LocalEngineClient.h"
+#include "client/OscEngineClient.h"
+#include "server/OscServer.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_core/juce_core.h>
@@ -14,6 +17,7 @@ static constexpr int kMaxLoops = 8;
 static constexpr int kMaxLookbackBars = 8;
 static constexpr double kMinBpm = 60.0;
 static constexpr int kTuiRefreshMs = 33;
+static constexpr const char* kDefaultOscPort = "7770";
 
 static std::atomic<bool> g_running{true};
 
@@ -69,35 +73,113 @@ private:
     retrospect::LoopEngine& engine_;
 };
 
+enum class RunMode {
+    Tui,         // audio + OscServer + LocalEngineClient + TUI (default)
+    Headless,    // audio + OscServer, no TUI
+    TuiOnly      // OscEngineClient + TUI, no audio
+};
+
+static void printUsage() {
+    fprintf(stdout, "Usage: retrospect [OPTIONS] [PORT]\n");
+    fprintf(stdout, "Options:\n");
+    fprintf(stdout, "  --jack                Use JACK audio backend\n");
+    fprintf(stdout, "  --alsa                Use ALSA audio backend\n");
+    fprintf(stdout, "  --headless            Run without TUI (server only)\n");
+    fprintf(stdout, "  --connect HOST:PORT   Connect TUI to a remote server\n");
+    fprintf(stdout, "  --help                Show this help message\n");
+    fprintf(stdout, "\nPORT: OSC server port (default: %s, used in TUI and headless modes)\n", kDefaultOscPort);
+    fprintf(stdout, "\nExamples:\n");
+    fprintf(stdout, "  retrospect                           TUI + server on port %s (default)\n", kDefaultOscPort);
+    fprintf(stdout, "  retrospect 9000                      TUI + server on port 9000\n");
+    fprintf(stdout, "  retrospect --headless                Headless server on port %s\n", kDefaultOscPort);
+    fprintf(stdout, "  retrospect --headless 9000           Headless server on port 9000\n");
+    fprintf(stdout, "  retrospect --connect localhost:7770  TUI-only, connect to remote\n");
+    fprintf(stdout, "  retrospect --jack                    TUI + server using JACK\n");
+}
+
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
     // Parse command-line arguments
     juce::String preferredBackend;
+    RunMode mode = RunMode::Tui;
+    std::string serverPort = kDefaultOscPort;
+    std::string connectTarget;  // "host:port" for TUI-only mode
+
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);
         if (arg == "--jack") {
             preferredBackend = "JACK";
         } else if (arg == "--alsa") {
             preferredBackend = "ALSA";
+        } else if (arg == "--headless") {
+            mode = RunMode::Headless;
+        } else if (arg == "--connect") {
+            if (i + 1 < argc) {
+                connectTarget = argv[++i];
+                mode = RunMode::TuiOnly;
+            } else {
+                fprintf(stderr, "--connect requires HOST:PORT argument\n");
+                return 1;
+            }
         } else if (arg == "--help" || arg == "-h") {
-            fprintf(stdout, "Usage: retrospect [OPTIONS]\n");
-            fprintf(stdout, "Options:\n");
-            fprintf(stdout, "  --jack    Use JACK audio backend\n");
-            fprintf(stdout, "  --alsa    Use ALSA audio backend\n");
-            fprintf(stdout, "  --help    Show this help message\n");
+            printUsage();
             return 0;
+        } else if (arg[0] != '-') {
+            serverPort = arg;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
         }
     }
 
-    // JUCE requires this for AudioDeviceManager
-    juce::ScopedJuceInitialiser_GUI juceInit;
+    // --- TUI-only mode (no audio, no engine) ---
+    if (mode == RunMode::TuiOnly) {
+        // Parse host:port
+        auto colonPos = connectTarget.rfind(':');
+        if (colonPos == std::string::npos) {
+            fprintf(stderr, "Invalid connect target: %s (expected host:port)\n", connectTarget.c_str());
+            return 1;
+        }
+        std::string host = connectTarget.substr(0, colonPos);
+        std::string port = connectTarget.substr(colonPos + 1);
 
-    // Set up audio device
+        retrospect::OscEngineClient client(host, port);
+        if (!client.isValid()) {
+            fprintf(stderr, "Failed to create OSC client\n");
+            return 1;
+        }
+
+        retrospect::Tui tui(client);
+        if (!tui.init()) {
+            fprintf(stderr, "Failed to initialize TUI\n");
+            return 1;
+        }
+
+        tui.addMessage("Connected to " + connectTarget);
+        tui.addMessage("Press 'q' to quit");
+
+        while (g_running) {
+            auto frameStart = std::chrono::steady_clock::now();
+
+            if (!tui.update()) break;
+
+            auto frameEnd = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                frameEnd - frameStart);
+            auto sleepTime = std::chrono::milliseconds(kTuiRefreshMs) - elapsed;
+            if (sleepTime.count() > 0) {
+                std::this_thread::sleep_for(sleepTime);
+            }
+        }
+
+        tui.shutdown();
+        return 0;
+    }
+
+    // --- Modes that require audio ---
+    juce::ScopedJuceInitialiser_GUI juceInit;
     juce::AudioDeviceManager deviceManager;
 
     // Set preferred audio backend if specified
@@ -137,29 +219,56 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  Sample rate: %.0f Hz\n", sampleRate);
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
 
-    // Create engine with the device's actual sample rate
+    // Create engine
     retrospect::LoopEngine engine(kMaxLoops, kMaxLookbackBars, sampleRate, kMinBpm);
 
     // Create and register audio callback
     AudioCallback audioCallback(engine);
     deviceManager.addAudioCallback(&audioCallback);
 
-    // Create TUI
-    retrospect::Tui tui(engine);
+    // --- Headless mode (no TUI) ---
+    if (mode == RunMode::Headless) {
+        retrospect::OscServer oscServer(engine, serverPort);
+        if (!oscServer.start()) {
+            deviceManager.removeAudioCallback(&audioCallback);
+            return 1;
+        }
 
-    // Wire engine callbacks to TUI (these fire from TUI thread via schedule methods)
-    retrospect::EngineCallbacks callbacks;
-    callbacks.onMessage = [&tui](const std::string& msg) {
-        tui.addMessage(msg);
-    };
-    callbacks.onStateChanged = []() {};
-    callbacks.onBeat = [](const retrospect::MetronomePosition&) {};
-    callbacks.onBar = [](const retrospect::MetronomePosition&) {};
-    engine.setCallbacks(std::move(callbacks));
+        fprintf(stderr, "Running headless on port %s\n", serverPort.c_str());
+        fprintf(stderr, "Press Ctrl+C to stop\n");
 
-    // Initialize TUI
+        while (g_running) {
+            auto frameStart = std::chrono::steady_clock::now();
+
+            oscServer.pushState();
+
+            auto frameEnd = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                frameEnd - frameStart);
+            auto sleepTime = std::chrono::milliseconds(kTuiRefreshMs) - elapsed;
+            if (sleepTime.count() > 0) {
+                std::this_thread::sleep_for(sleepTime);
+            }
+        }
+
+        oscServer.stop();
+        deviceManager.removeAudioCallback(&audioCallback);
+        return 0;
+    }
+
+    // --- TUI mode (default): audio + OSC server + TUI ---
+    retrospect::OscServer oscServer(engine, serverPort);
+    if (!oscServer.start()) {
+        deviceManager.removeAudioCallback(&audioCallback);
+        return 1;
+    }
+
+    retrospect::LocalEngineClient client(engine);
+    retrospect::Tui tui(client);
+
     if (!tui.init()) {
         fprintf(stderr, "Failed to initialize TUI\n");
+        oscServer.stop();
         deviceManager.removeAudioCallback(&audioCallback);
         return 1;
     }
@@ -171,6 +280,7 @@ int main(int argc, char* argv[]) {
         snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d", sampleRate, bufferSize);
         tui.addMessage(buf);
     }
+    tui.addMessage("OSC server on port " + serverPort);
     tui.addMessage("Press 'q' to quit");
 
     // Main loop: TUI at ~30fps
@@ -180,6 +290,8 @@ int main(int argc, char* argv[]) {
         if (!tui.update()) {
             break;
         }
+
+        oscServer.pushState();
 
         auto frameEnd = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -191,6 +303,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
+    oscServer.stop();
     deviceManager.removeAudioCallback(&audioCallback);
     tui.shutdown();
 

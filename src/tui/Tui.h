@@ -1,9 +1,8 @@
 #pragma once
 
-#include "core/LoopEngine.h"
+#include "client/EngineClient.h"
 #include <string>
 #include <vector>
-#include <atomic>
 #include <mutex>
 #include <deque>
 #include <chrono>
@@ -14,7 +13,7 @@ namespace retrospect {
 /// Displays loop states, metronome position, and accepts keyboard input.
 class Tui {
 public:
-    explicit Tui(LoopEngine& engine);
+    explicit Tui(EngineClient& client);
     ~Tui();
 
     /// Initialize ncurses
@@ -45,7 +44,7 @@ private:
     void handleKey(int key);
     void handleTapTempo();
 
-    LoopEngine& engine_;
+    EngineClient& client_;
     int selectedLoop_ = 0;
     bool initialized_ = false;
     bool needsRedraw_ = true;

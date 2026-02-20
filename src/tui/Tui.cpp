@@ -1,4 +1,5 @@
 #include "tui/Tui.h"
+#include "core/LoopEngine.h"  // For OpType
 #include <ncurses.h>
 #include <cmath>
 #include <sstream>
@@ -7,8 +8,8 @@
 
 namespace retrospect {
 
-Tui::Tui(LoopEngine& engine)
-    : engine_(engine)
+Tui::Tui(EngineClient& client)
+    : client_(client)
 {
 }
 
@@ -54,6 +55,14 @@ void Tui::shutdown() {
 bool Tui::update() {
     if (!initialized_) return false;
 
+    // Poll client for latest state
+    client_.poll();
+
+    // Drain messages from client into our log
+    for (const auto& msg : client_.snapshot().messages) {
+        addMessage(msg);
+    }
+
     // Handle resize
     int h, w;
     getmaxyx(stdscr, h, w);
@@ -80,6 +89,8 @@ bool Tui::update() {
 }
 
 void Tui::draw() {
+    const auto& snap = client_.snapshot();
+
     erase();
 
     int row = 0;
@@ -90,10 +101,10 @@ void Tui::draw() {
     row += 3;
 
     drawLoops(row);
-    row += engine_.maxLoops() + 2;
+    row += snap.maxLoops + 2;
 
     drawPendingOps(row);
-    row += static_cast<int>(std::min(engine_.pendingOpsSnapshot().size(), size_t(3))) + 2;
+    row += static_cast<int>(std::min(snap.pendingOps.size(), size_t(3))) + 2;
 
     drawControls(row);
     row += 7;
@@ -105,6 +116,8 @@ void Tui::draw() {
 }
 
 void Tui::drawHeader(int row) {
+    const auto& snap = client_.snapshot();
+
     attron(A_BOLD | COLOR_PAIR(7));
     mvprintw(row, 0, "RETROSPECT");
     attroff(A_BOLD | COLOR_PAIR(7));
@@ -112,14 +125,14 @@ void Tui::drawHeader(int row) {
 
     // Engine status
     std::ostringstream status;
-    status << "Loops: " << engine_.activeLoopCount() << "/" << engine_.maxLoops()
-           << "  SR: " << static_cast<int>(engine_.sampleRate()) << "Hz";
+    status << "Loops: " << snap.activeLoopCount << "/" << snap.maxLoops
+           << "  SR: " << static_cast<int>(snap.sampleRate) << "Hz";
     mvprintw(row + 1, 0, "%s", status.str().c_str());
 }
 
 void Tui::drawMetronome(int row) {
-    const auto& met = engine_.metronome();
-    auto pos = met.position();
+    const auto& snap = client_.snapshot();
+    const auto& met = snap.metronome;
 
     attron(A_BOLD);
     mvprintw(row, 0, "METRONOME");
@@ -127,20 +140,20 @@ void Tui::drawMetronome(int row) {
 
     std::ostringstream info;
     info << std::fixed << std::setprecision(1)
-         << met.bpm() << " BPM  "
-         << met.beatsPerBar() << "/4  "
-         << (met.isRunning() ? "RUNNING" : "STOPPED");
+         << met.bpm << " BPM  "
+         << met.beatsPerBar << "/4  "
+         << (met.running ? "RUNNING" : "STOPPED");
     mvprintw(row, 12, "%s", info.str().c_str());
 
     // Beat visualization: show current bar.beat position
     std::ostringstream posStr;
-    posStr << "Bar " << (pos.bar + 1) << "  Beat " << (pos.beat + 1);
+    posStr << "Bar " << (met.bar + 1) << "  Beat " << (met.beat + 1);
     mvprintw(row + 1, 2, "%s", posStr.str().c_str());
 
     // Beat indicator: visual beat display
     std::string beatVis = "  ";
-    for (int b = 0; b < met.beatsPerBar(); ++b) {
-        if (b == pos.beat) {
+    for (int b = 0; b < met.beatsPerBar; ++b) {
+        if (b == met.beat) {
             beatVis += "[X] ";
         } else {
             beatVis += "[ ] ";
@@ -150,33 +163,35 @@ void Tui::drawMetronome(int row) {
 
     // Quantize mode
     std::string qmode;
-    switch (engine_.defaultQuantize()) {
+    switch (snap.defaultQuantize) {
         case Quantize::Free: qmode = "FREE"; break;
         case Quantize::Beat: qmode = "BEAT"; break;
         case Quantize::Bar:  qmode = "BAR"; break;
     }
     mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s",
-             qmode.c_str(), engine_.lookbackBars(),
-             engine_.metronomeClickEnabled() ? "ON" : "OFF");
+             qmode.c_str(), snap.lookbackBars,
+             snap.clickEnabled ? "ON" : "OFF");
 
     // Recording indicator
-    if (engine_.isRecordingAtomic()) {
+    if (snap.isRecording) {
         attron(COLOR_PAIR(3) | A_BOLD);
-        mvprintw(row + 2, 40, "** REC Loop %d **", engine_.recordingLoopIdxAtomic());
+        mvprintw(row + 2, 40, "** REC Loop %d **", snap.recordingLoopIndex);
         attroff(COLOR_PAIR(3) | A_BOLD);
     }
 }
 
 void Tui::drawLoops(int startRow) {
+    const auto& snap = client_.snapshot();
+
     attron(A_BOLD);
     mvprintw(startRow, 0, "LOOPS");
     attroff(A_BOLD);
 
     mvprintw(startRow, 8, "# State      Bars   Layers Spd   Pos");
 
-    for (int i = 0; i < engine_.maxLoops(); ++i) {
+    for (int i = 0; i < snap.maxLoops; ++i) {
         int row = startRow + 1 + i;
-        const auto& lp = engine_.loop(i);
+        const auto& lp = snap.loops[static_cast<size_t>(i)];
 
         // Selection indicator
         if (i == selectedLoop_) {
@@ -195,14 +210,13 @@ void Tui::drawLoops(int startRow) {
         int colorPair = 5;
 
         // Check if this loop is being classic-recorded by the engine
-        bool classicRec = engine_.isRecordingAtomic() &&
-                          engine_.recordingLoopIdxAtomic() == i;
+        bool classicRec = snap.isRecording && snap.recordingLoopIndex == i;
 
         if (classicRec) {
             stateStr = "REC...   ";
             colorPair = 3;
         } else {
-            switch (lp.state()) {
+            switch (lp.state) {
                 case LoopState::Empty:
                     stateStr = "---      ";
                     break;
@@ -227,34 +241,33 @@ void Tui::drawLoops(int startRow) {
 
         if (!lp.isEmpty()) {
             // Bars
-            mvprintw(row, 14, "%5.1f", lp.lengthInBars());
+            mvprintw(row, 14, "%5.1f", lp.lengthInBars);
 
             // Layers
-            mvprintw(row, 21, "%d/%d",
-                     lp.activeLayerCount(), lp.layerCount());
+            mvprintw(row, 21, "%d/%d", lp.activeLayers, lp.layers);
 
             // Speed
             std::string spdStr;
-            if (lp.speed() == 1.0) spdStr = "1x";
-            else if (lp.speed() == 0.5) spdStr = "1/2x";
-            else if (lp.speed() == 2.0) spdStr = "2x";
+            if (lp.speed == 1.0) spdStr = "1x";
+            else if (lp.speed == 0.5) spdStr = "1/2x";
+            else if (lp.speed == 2.0) spdStr = "2x";
             else {
                 std::ostringstream ss;
-                ss << std::fixed << std::setprecision(2) << lp.speed() << "x";
+                ss << std::fixed << std::setprecision(2) << lp.speed << "x";
                 spdStr = ss.str();
             }
             mvprintw(row, 27, "%-5s", spdStr.c_str());
 
             // Reverse indicator
-            if (lp.isReversed()) {
+            if (lp.reversed) {
                 mvprintw(row, 33, "R");
             }
 
             // Play position as percentage
-            if (lp.lengthSamples() > 0) {
+            if (lp.lengthSamples > 0) {
                 int pct = static_cast<int>(
-                    100.0 * static_cast<double>(lp.playPosition()) /
-                    static_cast<double>(lp.lengthSamples()));
+                    100.0 * static_cast<double>(lp.playPosition) /
+                    static_cast<double>(lp.lengthSamples));
                 mvprintw(row, 35, "%3d%%", pct);
             }
         }
@@ -262,27 +275,28 @@ void Tui::drawLoops(int startRow) {
 }
 
 void Tui::drawPendingOps(int startRow) {
+    const auto& snap = client_.snapshot();
+
     attron(A_BOLD);
     mvprintw(startRow, 0, "PENDING");
     attroff(A_BOLD);
 
-    auto ops = engine_.pendingOpsSnapshot();
-    if (ops.empty()) {
+    if (snap.pendingOps.empty()) {
         mvprintw(startRow, 10, "(none)");
         return;
     }
 
     int shown = 0;
-    for (const auto& op : ops) {
+    for (const auto& op : snap.pendingOps) {
         if (shown >= 3) {
             mvprintw(startRow + 1 + shown, 2, "... and %d more",
-                     static_cast<int>(ops.size()) - shown);
+                     static_cast<int>(snap.pendingOps.size()) - shown);
             break;
         }
         attron(COLOR_PAIR(6));
         std::string qstr = op.quantize == Quantize::Beat ? "beat" : "bar";
         mvprintw(startRow + 1 + shown, 2, "Loop %d: %s @next %s",
-                 op.loopIndex, op.description().c_str(), qstr.c_str());
+                 op.loopIndex, op.description.c_str(), qstr.c_str());
         attroff(COLOR_PAIR(6));
         ++shown;
     }
@@ -316,7 +330,8 @@ void Tui::drawMessages(int startRow) {
 }
 
 void Tui::handleKey(int key) {
-    Quantize q = engine_.defaultQuantize();
+    const auto& snap = client_.snapshot();
+    Quantize q = snap.defaultQuantize;
 
     switch (key) {
         // Loop selection: 1-8
@@ -327,91 +342,90 @@ void Tui::handleKey(int key) {
 
         // Capture loop from ring buffer
         case ' ':
-            engine_.scheduleCaptureLoop(selectedLoop_, q);
+            client_.scheduleCaptureLoop(selectedLoop_, q);
             break;
 
         // Classic record toggle
         case 'r':
-            if (engine_.isRecordingAtomic() &&
-                engine_.recordingLoopIdxAtomic() == selectedLoop_) {
-                engine_.scheduleStopRecord(selectedLoop_, q);
-            } else if (!engine_.isRecordingAtomic()) {
-                engine_.scheduleRecord(selectedLoop_, q);
+            if (snap.isRecording && snap.recordingLoopIndex == selectedLoop_) {
+                client_.scheduleStopRecord(selectedLoop_, q);
+            } else if (!snap.isRecording) {
+                client_.scheduleRecord(selectedLoop_, q);
             }
             break;
 
         // Mute/unmute
         case 'm':
-            engine_.scheduleOp(OpType::ToggleMute, selectedLoop_, q);
+            client_.scheduleOp(OpType::ToggleMute, selectedLoop_, q);
             break;
 
         // Toggle metronome click
         case 'M': {
-            bool on = !engine_.metronomeClickEnabled();
-            engine_.setMetronomeClickEnabled(on);
+            bool on = !snap.clickEnabled;
+            client_.setMetronomeClickEnabled(on);
             addMessage(std::string("Metronome click: ") + (on ? "ON" : "OFF"));
             break;
         }
 
         // Reverse
         case 'v':
-            engine_.scheduleOp(OpType::Reverse, selectedLoop_, q);
+            client_.scheduleOp(OpType::Reverse, selectedLoop_, q);
             break;
 
         // Start overdub
         case 'o':
-            engine_.scheduleOp(OpType::StartOverdub, selectedLoop_, q);
+            client_.scheduleOp(OpType::StartOverdub, selectedLoop_, q);
             break;
 
         // Stop overdub
         case 'O':
-            engine_.scheduleOp(OpType::StopOverdub, selectedLoop_, q);
+            client_.scheduleOp(OpType::StopOverdub, selectedLoop_, q);
             break;
 
         // Undo layer
         case 'u':
-            engine_.scheduleOp(OpType::UndoLayer, selectedLoop_, Quantize::Free);
+            client_.scheduleOp(OpType::UndoLayer, selectedLoop_, Quantize::Free);
             break;
 
         // Redo layer
         case 'U':
-            engine_.scheduleOp(OpType::RedoLayer, selectedLoop_, Quantize::Free);
+            client_.scheduleOp(OpType::RedoLayer, selectedLoop_, Quantize::Free);
             break;
 
         // Clear loop
         case 'c':
-            engine_.executeOpNow(OpType::ClearLoop, selectedLoop_);
+            client_.executeOpNow(OpType::ClearLoop, selectedLoop_);
             break;
 
         // Speed decrease
         case '[': {
-            const auto& lp = engine_.loop(selectedLoop_);
-            double newSpeed = lp.speed() * 0.5;
-            engine_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
+            const auto& lp = snap.loops[static_cast<size_t>(selectedLoop_)];
+            double newSpeed = lp.speed * 0.5;
+            client_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
             break;
         }
 
         // Speed increase
         case ']': {
-            const auto& lp = engine_.loop(selectedLoop_);
-            double newSpeed = lp.speed() * 2.0;
-            engine_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
+            const auto& lp = snap.loops[static_cast<size_t>(selectedLoop_)];
+            double newSpeed = lp.speed * 2.0;
+            client_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
             break;
         }
 
         // Cycle quantize mode
         case '\t': {
-            switch (engine_.defaultQuantize()) {
+            switch (snap.defaultQuantize) {
                 case Quantize::Free:
-                    engine_.setDefaultQuantize(Quantize::Beat);
+                    client_.setDefaultQuantize(Quantize::Beat);
                     addMessage("Quantize: BEAT");
                     break;
                 case Quantize::Beat:
-                    engine_.setDefaultQuantize(Quantize::Bar);
+                    client_.setDefaultQuantize(Quantize::Bar);
                     addMessage("Quantize: BAR");
                     break;
                 case Quantize::Bar:
-                    engine_.setDefaultQuantize(Quantize::Free);
+                    client_.setDefaultQuantize(Quantize::Free);
                     addMessage("Quantize: FREE");
                     break;
             }
@@ -421,24 +435,24 @@ void Tui::handleKey(int key) {
         // BPM adjust
         case '+':
         case '=':
-            engine_.metronome().setBpm(engine_.metronome().bpm() + 5.0);
-            addMessage("BPM: " + std::to_string(static_cast<int>(engine_.metronome().bpm())));
+            client_.setBpm(snap.metronome.bpm + 5.0);
+            addMessage("BPM: " + std::to_string(static_cast<int>(snap.metronome.bpm + 5.0)));
             break;
 
         case '-':
-            engine_.metronome().setBpm(engine_.metronome().bpm() - 5.0);
-            addMessage("BPM: " + std::to_string(static_cast<int>(engine_.metronome().bpm())));
+            client_.setBpm(snap.metronome.bpm - 5.0);
+            addMessage("BPM: " + std::to_string(static_cast<int>(snap.metronome.bpm - 5.0)));
             break;
 
         // Lookback bars adjust
         case 'B':
-            engine_.setLookbackBars(engine_.lookbackBars() + 1);
-            addMessage("Lookback: " + std::to_string(engine_.lookbackBars()) + " bar(s)");
+            client_.setLookbackBars(snap.lookbackBars + 1);
+            addMessage("Lookback: " + std::to_string(snap.lookbackBars + 1) + " bar(s)");
             break;
 
         case 'b':
-            engine_.setLookbackBars(engine_.lookbackBars() - 1);
-            addMessage("Lookback: " + std::to_string(engine_.lookbackBars()) + " bar(s)");
+            client_.setLookbackBars(snap.lookbackBars - 1);
+            addMessage("Lookback: " + std::to_string(std::max(1, snap.lookbackBars - 1)) + " bar(s)");
             break;
 
         // Tap tempo
@@ -448,7 +462,7 @@ void Tui::handleKey(int key) {
 
         // Cancel pending
         case 27: // Escape
-            engine_.cancelPending();
+            client_.cancelPending();
             break;
 
         default:
@@ -486,7 +500,7 @@ void Tui::handleTapTempo() {
     double avgInterval = totalSec / (tapTimes_.size() - 1);
     double bpm = 60.0 / avgInterval;
 
-    engine_.metronome().setBpm(bpm);
+    client_.setBpm(bpm);
 
     std::ostringstream msg;
     msg << std::fixed << std::setprecision(1) << "Tap tempo: " << bpm << " BPM";
@@ -502,7 +516,8 @@ void Tui::addMessage(const std::string& msg) {
 }
 
 void Tui::setSelectedLoop(int index) {
-    selectedLoop_ = std::clamp(index, 0, engine_.maxLoops() - 1);
+    int maxLoops = client_.snapshot().maxLoops;
+    selectedLoop_ = std::clamp(index, 0, maxLoops - 1);
 }
 
 } // namespace retrospect
