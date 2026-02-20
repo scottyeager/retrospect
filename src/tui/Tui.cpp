@@ -168,9 +168,13 @@ void Tui::drawMetronome(int row) {
         case Quantize::Beat: qmode = "BEAT"; break;
         case Quantize::Bar:  qmode = "BAR"; break;
     }
-    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s",
+    std::string midiStr = snap.midiOutputAvailable
+        ? (snap.midiSyncEnabled ? "ON" : "OFF")
+        : "N/A";
+    mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s  MIDI: %s",
              qmode.c_str(), snap.lookbackBars,
-             snap.clickEnabled ? "ON" : "OFF");
+             snap.clickEnabled ? "ON" : "OFF",
+             midiStr.c_str());
 
     // Recording indicator
     if (snap.isRecording) {
@@ -312,7 +316,7 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
     mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        t: Tap tempo");
-    mvprintw(startRow + 6, 2, "Esc: Cancel pending q: Quit");
+    mvprintw(startRow + 6, 2, "S: MIDI sync on/off Esc: Cancel pending    q: Quit");
 }
 
 void Tui::drawMessages(int startRow) {
@@ -364,6 +368,18 @@ void Tui::handleKey(int key) {
             bool on = !snap.clickEnabled;
             client_.setMetronomeClickEnabled(on);
             addMessage(std::string("Metronome click: ") + (on ? "ON" : "OFF"));
+            break;
+        }
+
+        // Toggle MIDI sync output
+        case 'S': {
+            bool on = !snap.midiSyncEnabled;
+            client_.setMidiSyncEnabled(on);
+            if (snap.midiOutputAvailable) {
+                addMessage(std::string("MIDI sync: ") + (on ? "ON" : "OFF"));
+            } else {
+                addMessage("MIDI sync: no output device (use --midi-out)");
+            }
             break;
         }
 

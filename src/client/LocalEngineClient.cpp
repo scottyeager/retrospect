@@ -65,6 +65,10 @@ void LocalEngineClient::setMetronomeClickEnabled(bool on) {
     engine_.setMetronomeClickEnabled(on);
 }
 
+void LocalEngineClient::setMidiSyncEnabled(bool on) {
+    engine_.setMidiSyncEnabled(on);
+}
+
 void LocalEngineClient::setBpm(double bpm) {
     // Use the command queue for thread-safe BPM changes
     EngineCommand cmd;
@@ -121,6 +125,8 @@ void LocalEngineClient::poll() {
     snap_.defaultQuantize = engine_.defaultQuantize();
     snap_.lookbackBars = engine_.lookbackBars();
     snap_.clickEnabled = engine_.metronomeClickEnabled();
+    snap_.midiSyncEnabled = engine_.midiSyncEnabled();
+    snap_.midiOutputAvailable = engine_.midiSync().hasOutput();
 
     // Drain buffered messages
     {

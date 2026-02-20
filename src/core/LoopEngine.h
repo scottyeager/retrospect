@@ -2,6 +2,7 @@
 
 #include "core/Metronome.h"
 #include "core/MetronomeClick.h"
+#include "core/MidiSync.h"
 #include "core/RingBuffer.h"
 #include "core/Loop.h"
 #include "core/SpscQueue.h"
@@ -186,6 +187,12 @@ public:
     float metronomeClickVolume() const { return click_.volume(); }
     void setMetronomeClickVolume(float v) { click_.setVolume(v); }
 
+    /// MIDI sync output (24 PPQN clock)
+    MidiSync& midiSync() { return midiSync_; }
+    const MidiSync& midiSync() const { return midiSync_; }
+    bool midiSyncEnabled() const { return midiSync_.isEnabled(); }
+    void setMidiSyncEnabled(bool on) { midiSync_.setEnabled(on); }
+
     /// Whether a classic recording is in progress
     bool isRecording() const { return activeRecording_.has_value(); }
     int recordingLoopIndex() const;
@@ -216,6 +223,7 @@ private:
 
     Metronome metronome_;
     MetronomeClick click_;
+    MidiSync midiSync_;
     RingBuffer ringBuffer_;
     std::vector<Loop> loops_;
     std::deque<PendingOp> pendingOps_;

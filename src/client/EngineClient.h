@@ -58,6 +58,8 @@ struct EngineSnapshot {
     Quantize defaultQuantize = Quantize::Bar;
     int lookbackBars = 1;
     bool clickEnabled = true;
+    bool midiSyncEnabled = false;
+    bool midiOutputAvailable = false;
     double sampleRate = 44100.0;
     int maxLoops = 8;
     int activeLoopCount = 0;
@@ -127,6 +129,7 @@ public:
     virtual void setDefaultQuantize(Quantize q) = 0;
     virtual void setLookbackBars(int bars) = 0;
     virtual void setMetronomeClickEnabled(bool on) = 0;
+    virtual void setMidiSyncEnabled(bool on) = 0;
     virtual void setBpm(double bpm) = 0;
 
     // --- State ---

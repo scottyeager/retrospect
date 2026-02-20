@@ -34,7 +34,7 @@ OscEngineClient::OscEngineClient(const std::string& host, const std::string& por
                          handleLoop, this);
     lo_server_add_method(server_, "/retro/state/recording", "ii",
                          handleRecording, this);
-    lo_server_add_method(server_, "/retro/state/settings", "iiii",
+    lo_server_add_method(server_, "/retro/state/settings", "iiiiii",
                          handleSettings, this);
     lo_server_add_method(server_, "/retro/state/pending_clear", "",
                          handlePendingClear, this);
@@ -186,6 +186,12 @@ void OscEngineClient::setMetronomeClickEnabled(bool on) {
     snap_.clickEnabled = on;
 }
 
+void OscEngineClient::setMidiSyncEnabled(bool on) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/settings/midi_sync", "i", on ? 1 : 0);
+    snap_.midiSyncEnabled = on;
+}
+
 void OscEngineClient::setBpm(double bpm) {
     if (!serverAddr_) return;
     lo_send(serverAddr_, "/retro/metronome/bpm", "d", bpm);
@@ -253,6 +259,8 @@ int OscEngineClient::handleSettings(const char*, const char*, lo_arg** argv,
     self->snap_.lookbackBars = argv[1]->i;
     self->snap_.clickEnabled = argv[2]->i != 0;
     self->snap_.sampleRate = static_cast<double>(argv[3]->i);
+    self->snap_.midiSyncEnabled = argv[4]->i != 0;
+    self->snap_.midiOutputAvailable = argv[5]->i != 0;
     return 0;
 }
 

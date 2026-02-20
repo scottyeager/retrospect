@@ -32,6 +32,7 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
                        double sampleRate, double minBpm)
     : metronome_(120.0, 4, sampleRate)
     , click_(sampleRate)
+    , midiSync_(120.0, sampleRate)
     // Size ring buffer for maxLookbackBars at the slowest expected tempo.
     // At minBpm, one beat = (60/minBpm) seconds, one bar = beatsPerBar beats.
     , ringBuffer_(static_cast<int64_t>(
@@ -106,8 +107,9 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
             output[i] = outSample;
         }
 
-        // Advance metronome by 1 sample
+        // Advance metronome and MIDI sync by 1 sample
         metronome_.advance(1);
+        midiSync_.advance(1);
     }
 
     // Update display snapshot (non-blocking)
@@ -534,6 +536,7 @@ void LoopEngine::drainCommands() {
             }
             case CommandType::SetBpm: {
                 metronome_.setBpm(cmd.value);
+                midiSync_.setBpm(cmd.value);
                 break;
             }
             case CommandType::CancelPending: {
