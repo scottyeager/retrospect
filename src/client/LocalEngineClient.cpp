@@ -102,6 +102,8 @@ void LocalEngineClient::poll() {
         ls.reversed = lp.isReversed();
         ls.playPosition = lp.playPosition();
         ls.lengthSamples = lp.lengthSamples();
+        ls.recordedBpm = lp.recordedBpm();
+        ls.timeStretchActive = lp.isTimeStretchActive();
         if (!lp.isEmpty()) ++active;
     }
     snap_.activeLoopCount = active;

@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <string>
 #include <optional>
+#include <memory>
 
 namespace retrospect {
+
+class TimeStretcher;
 
 /// State of a loop
 enum class LoopState {
@@ -97,7 +100,14 @@ struct LoopLayer {
 /// The loop length is determined by the first layer captured.
 class Loop {
 public:
-    Loop() = default;
+    Loop();
+    ~Loop();
+
+    // Move-only (due to unique_ptr<TimeStretcher>)
+    Loop(Loop&&) noexcept;
+    Loop& operator=(Loop&&) noexcept;
+    Loop(const Loop&) = delete;
+    Loop& operator=(const Loop&) = delete;
 
     /// Initialize the loop with audio captured from the ring buffer.
     /// This sets the loop length and creates the first layer.
@@ -142,7 +152,7 @@ public:
 
     // Properties
     int64_t lengthSamples() const { return loopLength_; }
-    int64_t playPosition() const { return playPos_; }
+    int64_t playPosition() const;
     bool isReversed() const { return reversed_; }
     double speed() const { return speed_; }
     int layerCount() const { return static_cast<int>(layers_.size()); }
@@ -164,9 +174,37 @@ public:
     bool hasPendingOps() const { return pending_.hasAny(); }
     void clearPendingOps() { pending_.clearAll(); }
 
+    // --- Time stretching ---
+
+    /// Set the BPM at which this loop was recorded.
+    /// Called once when the loop is captured/recorded.
+    void setRecordedBpm(double bpm) { recordedBpm_ = bpm; }
+    double recordedBpm() const { return recordedBpm_; }
+
+    /// Set the current global BPM. When this differs from recordedBpm,
+    /// time stretching activates to keep the loop in sync with the new tempo
+    /// while preserving pitch.
+    void setCurrentBpm(double bpm);
+    double currentBpm() const { return currentBpm_; }
+
+    /// Set the sample rate (needed for stretcher initialization)
+    void setSampleRate(double sr) { sampleRate_ = sr; }
+
+    /// Whether time stretching is currently active
+    bool isTimeStretchActive() const;
+
 private:
     float getMixedSample(int64_t pos) const;
     float crossfadeGain(int64_t pos) const;
+
+    /// Process one sample in direct (non-stretched) mode
+    float processDirectSample();
+
+    /// Process one sample in time-stretched mode
+    float processStretchedSample();
+
+    /// Fill the stretch output buffer with another block of stretched audio
+    void fillStretchBuffer();
 
     std::vector<LoopLayer> layers_;
     LoopState state_ = LoopState::Empty;
@@ -179,6 +217,29 @@ private:
     double lengthInBars_ = 0.0;
     int id_ = -1;
     PendingState pending_;
+
+    // Time stretch state
+    double recordedBpm_ = 0.0;
+    double currentBpm_ = 0.0;
+    double sampleRate_ = 44100.0;
+
+    std::unique_ptr<TimeStretcher> stretcher_;
+
+    // Stretch output ring buffer
+    std::vector<float> stretchBuf_;
+    int stretchBufRead_ = 0;
+    int stretchBufAvail_ = 0;
+
+    // Raw read position for feeding the stretcher (tracks progress through loop)
+    int64_t stretchRawPos_ = 0;
+
+    // Pre-allocated work buffers (avoid allocation during processing)
+    std::vector<float> stretchInputWork_;
+    std::vector<float> stretchOutputWork_;
+
+    static constexpr int kStretchBlockSize = 512;
+    static constexpr int kStretchBufCapacity = 8192;
+    static constexpr int kMaxStretchInput = kStretchBlockSize * 4;
 };
 
 } // namespace retrospect

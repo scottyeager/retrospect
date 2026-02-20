@@ -56,6 +56,7 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
     for (int i = 0; i < maxLoops; ++i) {
         loops_[static_cast<size_t>(i)].setId(i);
         loops_[static_cast<size_t>(i)].setCrossfadeSamples(crossfadeSamples_);
+        loops_[static_cast<size_t>(i)].setSampleRate(sampleRate);
     }
 
     // Wire metronome callbacks
@@ -313,6 +314,10 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     double bars = static_cast<double>(lookback) / metronome_.samplesPerBar();
     lp.setLengthInBars(bars);
 
+    // Record the BPM at capture time for time stretching
+    lp.setRecordedBpm(metronome_.bpm());
+    lp.setCurrentBpm(metronome_.bpm());
+
     std::ostringstream msg;
     msg << "Loop " << idx << " captured (" << static_cast<int>(std::round(bars))
         << " bars, " << liveCount << " ch)";
@@ -388,6 +393,10 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
 
     double bars = static_cast<double>(lp.lengthSamples()) / metronome_.samplesPerBar();
     lp.setLengthInBars(bars);
+
+    // Record the BPM at recording time for time stretching
+    lp.setRecordedBpm(metronome_.bpm());
+    lp.setCurrentBpm(metronome_.bpm());
 
     activeRecording_.reset();
     isRecordingAtomic_.store(false, std::memory_order_relaxed);
@@ -666,6 +675,13 @@ void LoopEngine::drainCommands() {
                 metronome_.setBpm(cmd.value);
                 midiSync_.setBpm(cmd.value);
                 if (bpmChangedCallback_) bpmChangedCallback_(cmd.value);
+                // Propagate BPM change to all loops for time stretching
+                double newBpm = metronome_.bpm();
+                for (auto& lp : loops_) {
+                    if (!lp.isEmpty()) {
+                        lp.setCurrentBpm(newBpm);
+                    }
+                }
                 break;
             }
             case CommandType::CancelPending: {

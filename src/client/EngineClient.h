@@ -32,6 +32,8 @@ struct LoopSnapshot {
     bool reversed = false;
     int64_t playPosition = 0;
     int64_t lengthSamples = 0;
+    double recordedBpm = 0.0;
+    bool timeStretchActive = false;
 
     bool isEmpty() const { return state == LoopState::Empty; }
     bool isMuted() const { return state == LoopState::Muted; }
