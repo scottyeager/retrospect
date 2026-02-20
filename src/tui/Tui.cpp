@@ -310,12 +310,19 @@ void Tui::drawLoops(int startRow) {
                 mvprintw(row, 33, "R");
             }
 
+            // Stretch indicator
+            if (lp.timeStretchActive) {
+                attron(COLOR_PAIR(6));
+                mvprintw(row, 34, "S");
+                attroff(COLOR_PAIR(6));
+            }
+
             // Play position as percentage
             if (lp.lengthSamples > 0) {
                 int pct = static_cast<int>(
                     100.0 * static_cast<double>(lp.playPosition) /
                     static_cast<double>(lp.lengthSamples));
-                mvprintw(row, 35, "%3d%%", pct);
+                mvprintw(row, 36, "%3d%%", pct);
             }
         }
     }
