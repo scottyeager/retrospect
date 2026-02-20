@@ -1,0 +1,11 @@
+[project]
+name = "retrospect-client"
+version = "0.1.0"
+description = "Python OSC client for the Retrospect looper"
+requires-python = ">=3.10"
+dependencies = [
+    "python-osc>=1.8.0",
+]
+
+[project.scripts]
+retro-cli = "retro_cli:main"
