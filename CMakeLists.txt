@@ -22,14 +22,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(juce)
 
+# Fetch signalsmith-stretch (header-only time stretching library)
+FetchContent_Declare(
+    signalsmith_stretch
+    GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+    GIT_TAG 1.1.0
+)
+FetchContent_MakeAvailable(signalsmith_stretch)
+
 # Core library (pure C++ logic, no JUCE dependency)
 add_library(retrospect_core STATIC
     src/core/Metronome.cpp
     src/core/RingBuffer.cpp
     src/core/Loop.cpp
     src/core/LoopEngine.cpp
+    src/core/TimeStretcher.cpp
 )
 target_include_directories(retrospect_core PUBLIC src)
+target_include_directories(retrospect_core PRIVATE ${signalsmith_stretch_SOURCE_DIR})
 target_compile_options(retrospect_core PRIVATE -Wall -Wextra -Wpedantic)
 
 # Client library (EngineClient interface + implementations)
