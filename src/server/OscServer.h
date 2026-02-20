@@ -69,6 +69,8 @@ private:
                          lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleClick(const char* path, const char* types,
                            lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleMidiSync(const char* path, const char* types,
+                              lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleQuantize(const char* path, const char* types,
                               lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleLookbackBars(const char* path, const char* types,

@@ -53,6 +53,8 @@ bool OscServer::start() {
                                 handleBpm, this);
     lo_server_thread_add_method(serverThread_, "/retro/metronome/click", "i",
                                 handleClick, this);
+    lo_server_thread_add_method(serverThread_, "/retro/settings/midi_sync", "i",
+                                handleMidiSync, this);
     lo_server_thread_add_method(serverThread_, "/retro/settings/quantize", "i",
                                 handleQuantize, this);
     lo_server_thread_add_method(serverThread_, "/retro/settings/lookback_bars", "i",
@@ -141,11 +143,13 @@ void OscServer::pushStateTo(lo_address addr) {
             engine_.recordingLoopIdxAtomic());
 
     // Settings
-    lo_send(addr, "/retro/state/settings", "iiii",
+    lo_send(addr, "/retro/state/settings", "iiiiii",
             quantizeToInt(engine_.defaultQuantize()),
             engine_.lookbackBars(),
             engine_.metronomeClickEnabled() ? 1 : 0,
-            static_cast<int>(engine_.sampleRate()));
+            static_cast<int>(engine_.sampleRate()),
+            engine_.midiSyncEnabled() ? 1 : 0,
+            engine_.midiSync().hasOutput() ? 1 : 0);
 
     // Pending ops: send clear first, then each op
     lo_send(addr, "/retro/state/pending_clear", "");
@@ -282,6 +286,13 @@ int OscServer::handleClick(const char*, const char*, lo_arg** argv,
                             int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
     self->engine_.setMetronomeClickEnabled(argv[0]->i != 0);
+    return 0;
+}
+
+int OscServer::handleMidiSync(const char*, const char*, lo_arg** argv,
+                               int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.setMidiSyncEnabled(argv[0]->i != 0);
     return 0;
 }
 

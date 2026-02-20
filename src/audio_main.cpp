@@ -12,6 +12,7 @@
 #include <csignal>
 #include <atomic>
 #include <cstdio>
+#include <memory>
 
 static constexpr int kMaxLoops = 8;
 static constexpr int kMaxLookbackBars = 8;
@@ -79,6 +80,22 @@ enum class RunMode {
     TuiOnly      // OscEngineClient + TUI, no audio
 };
 
+/// Open a MIDI output device by name (case-insensitive substring match).
+/// Returns nullptr if no matching device is found.
+static std::unique_ptr<juce::MidiOutput> openMidiOutput(const juce::String& name) {
+    auto devices = juce::MidiOutput::getAvailableDevices();
+    for (const auto& d : devices) {
+        if (d.name.containsIgnoreCase(name)) {
+            auto output = juce::MidiOutput::openDevice(d.identifier);
+            if (output) {
+                fprintf(stderr, "Opened MIDI output: %s\n", d.name.toRawUTF8());
+                return output;
+            }
+        }
+    }
+    return nullptr;
+}
+
 static void printUsage() {
     fprintf(stdout, "Usage: retrospect [OPTIONS] [PORT]\n");
     fprintf(stdout, "Options:\n");
@@ -86,6 +103,8 @@ static void printUsage() {
     fprintf(stdout, "  --alsa                Use ALSA audio backend\n");
     fprintf(stdout, "  --headless            Run without TUI (server only)\n");
     fprintf(stdout, "  --connect HOST:PORT   Connect TUI to a remote server\n");
+    fprintf(stdout, "  --midi-out NAME       Open MIDI output device (substring match)\n");
+    fprintf(stdout, "  --list-midi           List available MIDI output devices\n");
     fprintf(stdout, "  --help                Show this help message\n");
     fprintf(stdout, "\nPORT: OSC server port (default: %s, used in TUI and headless modes)\n", kDefaultOscPort);
     fprintf(stdout, "\nExamples:\n");
@@ -95,6 +114,7 @@ static void printUsage() {
     fprintf(stdout, "  retrospect --headless 9000           Headless server on port 9000\n");
     fprintf(stdout, "  retrospect --connect localhost:7770  TUI-only, connect to remote\n");
     fprintf(stdout, "  retrospect --jack                    TUI + server using JACK\n");
+    fprintf(stdout, "  retrospect --midi-out \"USB MIDI\"     Enable MIDI sync output\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -106,6 +126,8 @@ int main(int argc, char* argv[]) {
     RunMode mode = RunMode::Tui;
     std::string serverPort = kDefaultOscPort;
     std::string connectTarget;  // "host:port" for TUI-only mode
+    std::string midiOutName;    // MIDI output device name
+    bool listMidi = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);
@@ -123,6 +145,15 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "--connect requires HOST:PORT argument\n");
                 return 1;
             }
+        } else if (arg == "--midi-out") {
+            if (i + 1 < argc) {
+                midiOutName = argv[++i];
+            } else {
+                fprintf(stderr, "--midi-out requires a device name argument\n");
+                return 1;
+            }
+        } else if (arg == "--list-midi") {
+            listMidi = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage();
             return 0;
@@ -132,6 +163,21 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
         }
+    }
+
+    // Handle --list-midi (needs JUCE init for device enumeration)
+    if (listMidi) {
+        juce::ScopedJuceInitialiser_GUI juceInit;
+        auto devices = juce::MidiOutput::getAvailableDevices();
+        if (devices.isEmpty()) {
+            fprintf(stdout, "No MIDI output devices found.\n");
+        } else {
+            fprintf(stdout, "Available MIDI output devices:\n");
+            for (const auto& d : devices) {
+                fprintf(stdout, "  %s\n", d.name.toRawUTF8());
+            }
+        }
+        return 0;
     }
 
     // --- TUI-only mode (no audio, no engine) ---
@@ -222,6 +268,27 @@ int main(int argc, char* argv[]) {
     // Create engine
     retrospect::LoopEngine engine(kMaxLoops, kMaxLookbackBars, sampleRate, kMinBpm);
 
+    // Open MIDI output if requested
+    std::unique_ptr<juce::MidiOutput> midiOutput;
+    if (!midiOutName.empty()) {
+        midiOutput = openMidiOutput(juce::String(midiOutName));
+        if (midiOutput) {
+            // Wire MIDI output to the engine's MidiSync
+            juce::MidiOutput* rawPtr = midiOutput.get();
+            engine.midiSync().setSendCallback([rawPtr](uint8_t statusByte) {
+                rawPtr->sendMessageNow(juce::MidiMessage(statusByte));
+            });
+            engine.setMidiSyncEnabled(true);
+        } else {
+            fprintf(stderr, "Warning: MIDI output device '%s' not found\n", midiOutName.c_str());
+            fprintf(stderr, "Available MIDI outputs:\n");
+            auto devices = juce::MidiOutput::getAvailableDevices();
+            for (const auto& d : devices) {
+                fprintf(stderr, "  %s\n", d.name.toRawUTF8());
+            }
+        }
+    }
+
     // Create and register audio callback
     AudioCallback audioCallback(engine);
     deviceManager.addAudioCallback(&audioCallback);
@@ -235,6 +302,9 @@ int main(int argc, char* argv[]) {
         }
 
         fprintf(stderr, "Running headless on port %s\n", serverPort.c_str());
+        if (midiOutput) {
+            fprintf(stderr, "MIDI sync output: enabled\n");
+        }
         fprintf(stderr, "Press Ctrl+C to stop\n");
 
         while (g_running) {
@@ -251,6 +321,8 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Stop MIDI sync before shutting down
+        engine.setMidiSyncEnabled(false);
         oscServer.stop();
         deviceManager.removeAudioCallback(&audioCallback);
         return 0;
@@ -281,6 +353,9 @@ int main(int argc, char* argv[]) {
         tui.addMessage(buf);
     }
     tui.addMessage("OSC server on port " + serverPort);
+    if (midiOutput) {
+        tui.addMessage("MIDI sync output: " + midiOutput->getName().toStdString());
+    }
     tui.addMessage("Press 'q' to quit");
 
     // Main loop: TUI at ~30fps
@@ -302,7 +377,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Cleanup
+    // Cleanup - stop MIDI sync before shutting down
+    engine.setMidiSyncEnabled(false);
     oscServer.stop();
     deviceManager.removeAudioCallback(&audioCallback);
     tui.shutdown();
