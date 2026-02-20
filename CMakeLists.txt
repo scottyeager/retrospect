@@ -20,7 +20,21 @@ FetchContent_Declare(
     GIT_TAG 8.0.4
     GIT_SHALLOW ON
 )
-FetchContent_MakeAvailable(juce)
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+    GIT_SHALLOW ON
+)
+FetchContent_MakeAvailable(juce tomlplusplus)
+
+# Config library (TOML config file + CLI parsing)
+add_library(retrospect_config STATIC
+    src/config/Config.cpp
+)
+target_include_directories(retrospect_config PUBLIC src)
+target_link_libraries(retrospect_config PUBLIC tomlplusplus::tomlplusplus)
+target_compile_options(retrospect_config PRIVATE -Wall -Wextra -Wpedantic)
 
 # Core library (pure C++ logic, no JUCE dependency)
 add_library(retrospect_core STATIC
@@ -66,6 +80,7 @@ juce_add_console_app(retrospect
 )
 target_sources(retrospect PRIVATE src/audio_main.cpp)
 target_link_libraries(retrospect PRIVATE
+    retrospect_config
     retrospect_core
     retrospect_client
     retrospect_server

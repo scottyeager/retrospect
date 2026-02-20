@@ -1,4 +1,6 @@
+#include "config/Config.h"
 #include "core/LoopEngine.h"
+#include "core/Metronome.h"
 #include "tui/Tui.h"
 #include "client/LocalEngineClient.h"
 #include "client/OscEngineClient.h"
@@ -13,12 +15,6 @@
 #include <atomic>
 #include <cstdio>
 #include <memory>
-
-static constexpr int kMaxLoops = 8;
-static constexpr int kMaxLookbackBars = 8;
-static constexpr double kMinBpm = 60.0;
-static constexpr int kTuiRefreshMs = 33;
-static constexpr const char* kDefaultOscPort = "7770";
 
 static std::atomic<bool> g_running{true};
 
@@ -96,7 +92,14 @@ static std::unique_ptr<juce::MidiOutput> openMidiOutput(const juce::String& name
     return nullptr;
 }
 
-static void printUsage() {
+/// Convert quantize string ("free", "beat", "bar") to Quantize enum
+static retrospect::Quantize quantizeFromString(const std::string& s) {
+    if (s == "free") return retrospect::Quantize::Free;
+    if (s == "beat") return retrospect::Quantize::Beat;
+    return retrospect::Quantize::Bar;
+}
+
+static void printUsage(const retrospect::Config& cfg) {
     fprintf(stdout, "Usage: retrospect [OPTIONS] [PORT]\n");
     fprintf(stdout, "Options:\n");
     fprintf(stdout, "  --jack                Use JACK audio backend\n");
@@ -107,11 +110,12 @@ static void printUsage() {
     fprintf(stdout, "  --list-midi           List available MIDI output devices\n");
     fprintf(stdout, "\nA virtual MIDI output device named 'Retrospect' is created automatically.\n");
     fprintf(stdout, "  --help                Show this help message\n");
-    fprintf(stdout, "\nPORT: OSC server port (default: %s, used in TUI and headless modes)\n", kDefaultOscPort);
+    fprintf(stdout, "\nPORT: OSC server port (default: %s, used in TUI and headless modes)\n", cfg.oscPort.c_str());
+    fprintf(stdout, "\nConfig file: %s\n", retrospect::Config::configFilePath().c_str());
     fprintf(stdout, "\nExamples:\n");
-    fprintf(stdout, "  retrospect                           TUI + server on port %s (default)\n", kDefaultOscPort);
+    fprintf(stdout, "  retrospect                           TUI + server on port %s (default)\n", cfg.oscPort.c_str());
     fprintf(stdout, "  retrospect 9000                      TUI + server on port 9000\n");
-    fprintf(stdout, "  retrospect --headless                Headless server on port %s\n", kDefaultOscPort);
+    fprintf(stdout, "  retrospect --headless                Headless server on port %s\n", cfg.oscPort.c_str());
     fprintf(stdout, "  retrospect --headless 9000           Headless server on port 9000\n");
     fprintf(stdout, "  retrospect --connect localhost:7770  TUI-only, connect to remote\n");
     fprintf(stdout, "  retrospect --jack                    TUI + server using JACK\n");
@@ -122,52 +126,26 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
-    // Parse command-line arguments
-    juce::String preferredBackend;
-    RunMode mode = RunMode::Tui;
-    std::string serverPort = kDefaultOscPort;
-    std::string connectTarget;  // "host:port" for TUI-only mode
-    std::string midiOutName;    // MIDI output device name
-    bool listMidi = false;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-        if (arg == "--jack") {
-            preferredBackend = "JACK";
-        } else if (arg == "--alsa") {
-            preferredBackend = "ALSA";
-        } else if (arg == "--headless") {
-            mode = RunMode::Headless;
-        } else if (arg == "--connect") {
-            if (i + 1 < argc) {
-                connectTarget = argv[++i];
-                mode = RunMode::TuiOnly;
-            } else {
-                fprintf(stderr, "--connect requires HOST:PORT argument\n");
-                return 1;
-            }
-        } else if (arg == "--midi-out") {
-            if (i + 1 < argc) {
-                midiOutName = argv[++i];
-            } else {
-                fprintf(stderr, "--midi-out requires a device name argument\n");
-                return 1;
-            }
-        } else if (arg == "--list-midi") {
-            listMidi = true;
-        } else if (arg == "--help" || arg == "-h") {
-            printUsage();
-            return 0;
-        } else if (arg[0] != '-') {
-            serverPort = arg;
-        } else {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            return 1;
+    // Load config file, then apply CLI overrides
+    auto cfg = retrospect::Config::load();
+    int exitCode = 0;
+    if (!cfg.parseArgs(argc, argv, exitCode)) {
+        if (cfg.showHelp) {
+            printUsage(cfg);
         }
+        return exitCode;
+    }
+
+    // Determine run mode
+    RunMode mode = RunMode::Tui;
+    if (cfg.headless) {
+        mode = RunMode::Headless;
+    } else if (!cfg.connectTarget.empty()) {
+        mode = RunMode::TuiOnly;
     }
 
     // Handle --list-midi (needs JUCE init for device enumeration)
-    if (listMidi) {
+    if (cfg.listMidi) {
         juce::ScopedJuceInitialiser_GUI juceInit;
         auto devices = juce::MidiOutput::getAvailableDevices();
         if (devices.isEmpty()) {
@@ -184,13 +162,13 @@ int main(int argc, char* argv[]) {
     // --- TUI-only mode (no audio, no engine) ---
     if (mode == RunMode::TuiOnly) {
         // Parse host:port
-        auto colonPos = connectTarget.rfind(':');
+        auto colonPos = cfg.connectTarget.rfind(':');
         if (colonPos == std::string::npos) {
-            fprintf(stderr, "Invalid connect target: %s (expected host:port)\n", connectTarget.c_str());
+            fprintf(stderr, "Invalid connect target: %s (expected host:port)\n", cfg.connectTarget.c_str());
             return 1;
         }
-        std::string host = connectTarget.substr(0, colonPos);
-        std::string port = connectTarget.substr(colonPos + 1);
+        std::string host = cfg.connectTarget.substr(0, colonPos);
+        std::string port = cfg.connectTarget.substr(colonPos + 1);
 
         retrospect::OscEngineClient client(host, port);
         if (!client.isValid()) {
@@ -204,7 +182,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        tui.addMessage("Connected to " + connectTarget);
+        tui.addMessage("Connected to " + cfg.connectTarget);
         tui.addMessage("Press 'q' to quit");
 
         while (g_running) {
@@ -215,7 +193,7 @@ int main(int argc, char* argv[]) {
             auto frameEnd = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 frameEnd - frameStart);
-            auto sleepTime = std::chrono::milliseconds(kTuiRefreshMs) - elapsed;
+            auto sleepTime = std::chrono::milliseconds(cfg.tuiRefreshMs) - elapsed;
             if (sleepTime.count() > 0) {
                 std::this_thread::sleep_for(sleepTime);
             }
@@ -230,7 +208,8 @@ int main(int argc, char* argv[]) {
     juce::AudioDeviceManager deviceManager;
 
     // Set preferred audio backend if specified
-    if (preferredBackend.isNotEmpty()) {
+    if (!cfg.audioBackend.empty()) {
+        juce::String preferredBackend(cfg.audioBackend);
         auto& deviceTypes = deviceManager.getAvailableDeviceTypes();
         bool found = false;
         for (auto* deviceType : deviceTypes) {
@@ -267,14 +246,25 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
 
     // Create engine
-    retrospect::LoopEngine engine(kMaxLoops, kMaxLookbackBars, sampleRate, kMinBpm);
+    retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm);
 
-    // Open MIDI output: use --midi-out device if specified, otherwise create a virtual device
+    // Apply config values to engine
+    engine.metronome().setBpm(cfg.bpm);
+    engine.metronome().setBeatsPerBar(cfg.beatsPerBar);
+    engine.midiSync().setBpm(cfg.bpm);
+    engine.setMetronomeClickEnabled(cfg.clickEnabled);
+    engine.setMetronomeClickVolume(cfg.clickVolume);
+    engine.setCrossfadeSamples(cfg.crossfadeSamples);
+    engine.setLookbackBars(cfg.lookbackBars);
+    engine.setMidiSyncEnabled(cfg.midiSyncEnabled);
+    engine.setDefaultQuantize(quantizeFromString(cfg.defaultQuantize));
+
+    // Open MIDI output: use --midi-out / config device if specified, otherwise create a virtual device
     std::unique_ptr<juce::MidiOutput> midiOutput;
-    if (!midiOutName.empty()) {
-        midiOutput = openMidiOutput(juce::String(midiOutName));
+    if (!cfg.midiOutputDevice.empty()) {
+        midiOutput = openMidiOutput(juce::String(cfg.midiOutputDevice));
         if (!midiOutput) {
-            fprintf(stderr, "Warning: MIDI output device '%s' not found\n", midiOutName.c_str());
+            fprintf(stderr, "Warning: MIDI output device '%s' not found\n", cfg.midiOutputDevice.c_str());
             fprintf(stderr, "Available MIDI outputs:\n");
             auto devices = juce::MidiOutput::getAvailableDevices();
             for (const auto& d : devices) {
@@ -303,13 +293,13 @@ int main(int argc, char* argv[]) {
 
     // --- Headless mode (no TUI) ---
     if (mode == RunMode::Headless) {
-        retrospect::OscServer oscServer(engine, serverPort);
+        retrospect::OscServer oscServer(engine, cfg.oscPort);
         if (!oscServer.start()) {
             deviceManager.removeAudioCallback(&audioCallback);
             return 1;
         }
 
-        fprintf(stderr, "Running headless on port %s\n", serverPort.c_str());
+        fprintf(stderr, "Running headless on port %s\n", cfg.oscPort.c_str());
         if (midiOutput) {
             fprintf(stderr, "MIDI sync output: enabled\n");
         }
@@ -323,7 +313,7 @@ int main(int argc, char* argv[]) {
             auto frameEnd = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 frameEnd - frameStart);
-            auto sleepTime = std::chrono::milliseconds(kTuiRefreshMs) - elapsed;
+            auto sleepTime = std::chrono::milliseconds(cfg.tuiRefreshMs) - elapsed;
             if (sleepTime.count() > 0) {
                 std::this_thread::sleep_for(sleepTime);
             }
@@ -337,7 +327,7 @@ int main(int argc, char* argv[]) {
     }
 
     // --- TUI mode (default): audio + OSC server + TUI ---
-    retrospect::OscServer oscServer(engine, serverPort);
+    retrospect::OscServer oscServer(engine, cfg.oscPort);
     if (!oscServer.start()) {
         deviceManager.removeAudioCallback(&audioCallback);
         return 1;
@@ -360,7 +350,7 @@ int main(int argc, char* argv[]) {
         snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d", sampleRate, bufferSize);
         tui.addMessage(buf);
     }
-    tui.addMessage("OSC server on port " + serverPort);
+    tui.addMessage("OSC server on port " + cfg.oscPort);
     if (midiOutput) {
         tui.addMessage("MIDI sync output: " + midiOutput->getName().toStdString());
     }
@@ -379,7 +369,7 @@ int main(int argc, char* argv[]) {
         auto frameEnd = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             frameEnd - frameStart);
-        auto sleepTime = std::chrono::milliseconds(kTuiRefreshMs) - elapsed;
+        auto sleepTime = std::chrono::milliseconds(cfg.tuiRefreshMs) - elapsed;
         if (sleepTime.count() > 0) {
             std::this_thread::sleep_for(sleepTime);
         }
