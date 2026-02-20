@@ -166,7 +166,8 @@ public:
 
     /// Lookback duration in bars for capture
     int lookbackBars() const { return lookbackBars_; }
-    void setLookbackBars(int bars);
+    /// Set lookback bars, clamped to [1, maxLookbackBars]. Returns actual value set.
+    int setLookbackBars(int bars);
 
     /// Maximum lookback in bars (determines ring buffer size)
     int maxLookbackBars() const { return maxLookbackBars_; }

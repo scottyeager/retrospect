@@ -435,8 +435,9 @@ int LoopEngine::nextEmptySlot() const {
     return -1;
 }
 
-void LoopEngine::setLookbackBars(int bars) {
+int LoopEngine::setLookbackBars(int bars) {
     lookbackBars_ = std::max(1, std::min(bars, maxLookbackBars_));
+    return lookbackBars_;
 }
 
 int LoopEngine::recordingLoopIndex() const {

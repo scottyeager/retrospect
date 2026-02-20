@@ -306,7 +306,14 @@ int OscServer::handleQuantize(const char*, const char*, lo_arg** argv,
 int OscServer::handleLookbackBars(const char*, const char*, lo_arg** argv,
                                    int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
-    self->engine_.setLookbackBars(argv[0]->i);
+    int requested = argv[0]->i;
+    int actual = self->engine_.setLookbackBars(requested);
+    if (actual != requested) {
+        std::lock_guard<std::mutex> lock(self->msgMutex_);
+        self->pendingMessages_.push_back(
+            "Lookback clamped to " + std::to_string(actual) + " bar(s) (max " +
+            std::to_string(self->engine_.maxLookbackBars()) + ")");
+    }
     return 0;
 }
 

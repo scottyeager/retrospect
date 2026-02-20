@@ -33,7 +33,7 @@ public:
 
     // Settings
     void setDefaultQuantize(Quantize q) override;
-    void setLookbackBars(int bars) override;
+    int setLookbackBars(int bars) override;
     void setMetronomeClickEnabled(bool on) override;
     void setMidiSyncEnabled(bool on) override;
     void setBpm(double bpm) override;

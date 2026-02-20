@@ -57,8 +57,8 @@ void LocalEngineClient::setDefaultQuantize(Quantize q) {
     engine_.setDefaultQuantize(q);
 }
 
-void LocalEngineClient::setLookbackBars(int bars) {
-    engine_.setLookbackBars(bars);
+int LocalEngineClient::setLookbackBars(int bars) {
+    return engine_.setLookbackBars(bars);
 }
 
 void LocalEngineClient::setMetronomeClickEnabled(bool on) {

@@ -127,7 +127,7 @@ public:
 
     // --- Settings ---
     virtual void setDefaultQuantize(Quantize q) = 0;
-    virtual void setLookbackBars(int bars) = 0;
+    virtual int setLookbackBars(int bars) = 0;
     virtual void setMetronomeClickEnabled(bool on) = 0;
     virtual void setMidiSyncEnabled(bool on) = 0;
     virtual void setBpm(double bpm) = 0;

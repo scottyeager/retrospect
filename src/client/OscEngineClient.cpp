@@ -174,10 +174,11 @@ void OscEngineClient::setDefaultQuantize(Quantize q) {
     snap_.defaultQuantize = q;
 }
 
-void OscEngineClient::setLookbackBars(int bars) {
-    if (!serverAddr_) return;
+int OscEngineClient::setLookbackBars(int bars) {
+    if (!serverAddr_) return snap_.lookbackBars;
     lo_send(serverAddr_, "/retro/settings/lookback_bars", "i", bars);
     snap_.lookbackBars = bars;
+    return bars;
 }
 
 void OscEngineClient::setMetronomeClickEnabled(bool on) {
