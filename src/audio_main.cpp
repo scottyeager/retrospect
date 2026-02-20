@@ -103,8 +103,9 @@ static void printUsage() {
     fprintf(stdout, "  --alsa                Use ALSA audio backend\n");
     fprintf(stdout, "  --headless            Run without TUI (server only)\n");
     fprintf(stdout, "  --connect HOST:PORT   Connect TUI to a remote server\n");
-    fprintf(stdout, "  --midi-out NAME       Open MIDI output device (substring match)\n");
+    fprintf(stdout, "  --midi-out NAME       Use specific MIDI output device (substring match)\n");
     fprintf(stdout, "  --list-midi           List available MIDI output devices\n");
+    fprintf(stdout, "\nA virtual MIDI output device named 'Retrospect' is created automatically.\n");
     fprintf(stdout, "  --help                Show this help message\n");
     fprintf(stdout, "\nPORT: OSC server port (default: %s, used in TUI and headless modes)\n", kDefaultOscPort);
     fprintf(stdout, "\nExamples:\n");
@@ -268,18 +269,11 @@ int main(int argc, char* argv[]) {
     // Create engine
     retrospect::LoopEngine engine(kMaxLoops, kMaxLookbackBars, sampleRate, kMinBpm);
 
-    // Open MIDI output if requested
+    // Open MIDI output: use --midi-out device if specified, otherwise create a virtual device
     std::unique_ptr<juce::MidiOutput> midiOutput;
     if (!midiOutName.empty()) {
         midiOutput = openMidiOutput(juce::String(midiOutName));
-        if (midiOutput) {
-            // Wire MIDI output to the engine's MidiSync
-            juce::MidiOutput* rawPtr = midiOutput.get();
-            engine.midiSync().setSendCallback([rawPtr](uint8_t statusByte) {
-                rawPtr->sendMessageNow(juce::MidiMessage(statusByte));
-            });
-            engine.setMidiSyncEnabled(true);
-        } else {
+        if (!midiOutput) {
             fprintf(stderr, "Warning: MIDI output device '%s' not found\n", midiOutName.c_str());
             fprintf(stderr, "Available MIDI outputs:\n");
             auto devices = juce::MidiOutput::getAvailableDevices();
@@ -287,6 +281,20 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "  %s\n", d.name.toRawUTF8());
             }
         }
+    }
+    if (!midiOutput) {
+        midiOutput = juce::MidiOutput::createNewDevice("Retrospect");
+        if (midiOutput) {
+            fprintf(stderr, "Created virtual MIDI output: Retrospect\n");
+        } else {
+            fprintf(stderr, "Warning: could not create virtual MIDI output\n");
+        }
+    }
+    if (midiOutput) {
+        juce::MidiOutput* rawPtr = midiOutput.get();
+        engine.midiSync().setSendCallback([rawPtr](uint8_t statusByte) {
+            rawPtr->sendMessageNow(juce::MidiMessage(statusByte));
+        });
     }
 
     // Create and register audio callback

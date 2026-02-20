@@ -81,4 +81,6 @@ target_compile_definitions(retrospect PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_JACK=1
     JUCE_ALSA=1
+    JUCE_ALSA_MIDI_NAME="Retrospect"
+    JUCE_JACK_CLIENT_NAME="Retrospect"
 )

@@ -375,11 +375,7 @@ void Tui::handleKey(int key) {
         case 'S': {
             bool on = !snap.midiSyncEnabled;
             client_.setMidiSyncEnabled(on);
-            if (snap.midiOutputAvailable) {
-                addMessage(std::string("MIDI sync: ") + (on ? "ON" : "OFF"));
-            } else {
-                addMessage("MIDI sync: no output device (use --midi-out)");
-            }
+            addMessage(std::string("MIDI sync: ") + (on ? "ON" : "OFF"));
             break;
         }
 
@@ -461,15 +457,17 @@ void Tui::handleKey(int key) {
             break;
 
         // Lookback bars adjust
-        case 'B':
-            client_.setLookbackBars(snap.lookbackBars + 1);
-            addMessage("Lookback: " + std::to_string(snap.lookbackBars + 1) + " bar(s)");
+        case 'B': {
+            int actual = client_.setLookbackBars(snap.lookbackBars + 1);
+            addMessage("Lookback: " + std::to_string(actual) + " bar(s)");
             break;
+        }
 
-        case 'b':
-            client_.setLookbackBars(snap.lookbackBars - 1);
-            addMessage("Lookback: " + std::to_string(std::max(1, snap.lookbackBars - 1)) + " bar(s)");
+        case 'b': {
+            int actual = client_.setLookbackBars(snap.lookbackBars - 1);
+            addMessage("Lookback: " + std::to_string(actual) + " bar(s)");
             break;
+        }
 
         // Tap tempo
         case 't':
