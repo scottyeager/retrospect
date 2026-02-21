@@ -29,18 +29,28 @@ std::string opTypeDescription(OpType type) {
 }
 
 LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
-                       double sampleRate, double minBpm)
+                       double sampleRate, double minBpm,
+                       int numInputChannels, float liveThreshold,
+                       int liveWindowMs)
     : metronome_(120.0, 4, sampleRate)
     , click_(sampleRate)
     , midiSync_(120.0, sampleRate)
-    // Size ring buffer for maxLookbackBars at the slowest expected tempo.
-    // At minBpm, one beat = (60/minBpm) seconds, one bar = beatsPerBar beats.
-    , ringBuffer_(static_cast<int64_t>(
-          std::ceil(maxLookbackBars * 4 * (60.0 / minBpm) * sampleRate)))
     , loops_(static_cast<size_t>(maxLoops))
     , maxLookbackBars_(maxLookbackBars)
     , sampleRate_(sampleRate)
+    , liveThreshold_(liveThreshold)
 {
+    // Size ring buffer for maxLookbackBars at the slowest expected tempo.
+    // At minBpm, one beat = (60/minBpm) seconds, one bar = beatsPerBar beats.
+    int64_t ringCapacity = static_cast<int64_t>(
+        std::ceil(maxLookbackBars * 4 * (60.0 / minBpm) * sampleRate));
+    int activityWindowSamples = static_cast<int>(
+        sampleRate * static_cast<double>(liveWindowMs) / 1000.0);
+
+    inputChannels_.reserve(static_cast<size_t>(numInputChannels));
+    for (int i = 0; i < numInputChannels; ++i) {
+        inputChannels_.emplace_back(ringCapacity, activityWindowSamples);
+    }
     for (int i = 0; i < maxLoops; ++i) {
         loops_[static_cast<size_t>(i)].setId(i);
         loops_[static_cast<size_t>(i)].setCrossfadeSamples(crossfadeSamples_);
@@ -56,19 +66,29 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
     });
 }
 
-void LoopEngine::processBlock(const float* input, float* output, int numSamples) {
+void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
+                              float* output, int numSamples) {
     // Drain commands from TUI thread at the start of each block
     drainCommands();
 
-    for (int i = 0; i < numSamples; ++i) {
-        float inSample = input ? input[i] : 0.0f;
+    int engineChannels = static_cast<int>(inputChannels_.size());
 
-        // Write input to ring buffer
-        ringBuffer_.write(&inSample, 1);
+    for (int i = 0; i < numSamples; ++i) {
+        // Write each input channel to its InputChannel and compute
+        // the mono mix of live channels.
+        float liveMix = 0.0f;
+        for (int ch = 0; ch < engineChannels; ++ch) {
+            float sample = (ch < inputChannelCount && input && input[ch])
+                ? input[ch][i] : 0.0f;
+            inputChannels_[static_cast<size_t>(ch)].writeSample(sample);
+            if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
+                liveMix += sample;
+            }
+        }
 
         // Accumulate into active classic recording if one is in progress
         if (activeRecording_) {
-            activeRecording_->buffer.push_back(inSample);
+            activeRecording_->buffer.push_back(liveMix);
         }
 
         // Check each loop's pending state
@@ -85,9 +105,9 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
             if (!lp.isEmpty()) {
                 outSample += lp.processSample();
 
-                // Feed input to overdub-recording loops
+                // Feed live input mix to overdub-recording loops
                 if (lp.isRecording()) {
-                    lp.recordSample(inSample);
+                    lp.recordSample(liveMix);
                 }
             }
         }
@@ -95,9 +115,9 @@ void LoopEngine::processBlock(const float* input, float* output, int numSamples)
         // Mix metronome click
         outSample += click_.nextSample();
 
-        // Input monitoring
+        // Input monitoring (pass through the live mix)
         if (inputMonitoring_) {
-            outSample += inSample;
+            outSample += liveMix;
         }
 
         if (output) {
@@ -227,15 +247,38 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
             std::round(static_cast<double>(lookbackBars_) * metronome_.samplesPerBar()));
     }
 
-    // Clamp to available data
-    lookback = std::min(lookback, ringBuffer_.available());
+    // Clamp to the minimum available across all input channels
+    for (auto& ch : inputChannels_) {
+        lookback = std::min(lookback, ch.ringBuffer().available());
+    }
     if (lookback <= 0) {
         lastMessage_ = "No audio to capture";
         if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
         return;
     }
 
-    std::vector<float> audio = ringBuffer_.capture(static_cast<int>(lookback));
+    int captureLen = static_cast<int>(lookback);
+
+    // Capture from each live input channel and mix down to mono.
+    // A channel is considered live if it currently has activity above threshold.
+    std::vector<float> audio(static_cast<size_t>(captureLen), 0.0f);
+    int liveCount = 0;
+    for (auto& ch : inputChannels_) {
+        if (ch.isLive(liveThreshold_)) {
+            auto chAudio = ch.ringBuffer().capture(captureLen);
+            for (size_t j = 0; j < audio.size(); ++j) {
+                audio[j] += chAudio[j];
+            }
+            ++liveCount;
+        }
+    }
+
+    if (liveCount == 0) {
+        lastMessage_ = "No live input channels to capture";
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
     lp.loadFromCapture(std::move(audio));
     lp.setCrossfadeSamples(crossfadeSamples_);
 
@@ -243,7 +286,8 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     lp.setLengthInBars(bars);
 
     std::ostringstream msg;
-    msg << "Loop " << idx << " captured (" << static_cast<int>(std::round(bars)) << " bars)";
+    msg << "Loop " << idx << " captured (" << static_cast<int>(std::round(bars))
+        << " bars, " << liveCount << " ch)";
     lastMessage_ = msg.str();
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
     if (callbacks_.onStateChanged) callbacks_.onStateChanged();
