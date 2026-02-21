@@ -37,6 +37,7 @@ private:
     void draw();
     void drawHeader(int row);
     void drawMetronome(int row);
+    void drawInputChannels(int startRow);
     void drawLoops(int startRow);
     void drawPendingOps(int startRow);
     void drawControls(int startRow);

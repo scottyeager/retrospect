@@ -100,6 +100,12 @@ void Tui::draw() {
     drawMetronome(row);
     row += 3;
 
+    // Only show input channel section when live detection is active
+    if (snap.liveThreshold > 0.0f && !snap.inputChannels.empty()) {
+        drawInputChannels(row);
+        row += 2;
+    }
+
     drawLoops(row);
     row += snap.maxLoops + 2;
 
@@ -182,6 +188,38 @@ void Tui::drawMetronome(int row) {
         mvprintw(row + 2, 40, "** REC Loop %d **", snap.recordingLoopIndex);
         attroff(COLOR_PAIR(3) | A_BOLD);
     }
+}
+
+void Tui::drawInputChannels(int startRow) {
+    const auto& snap = client_.snapshot();
+
+    attron(A_BOLD);
+    mvprintw(startRow, 0, "INPUT");
+    attroff(A_BOLD);
+
+    int col = 8;
+    for (size_t ch = 0; ch < snap.inputChannels.size(); ++ch) {
+        const auto& ic = snap.inputChannels[ch];
+
+        // Channel label
+        mvprintw(startRow, col, "%d:", static_cast<int>(ch + 1));
+        col += 2;
+
+        // Live indicator with color
+        if (ic.live) {
+            attron(COLOR_PAIR(1) | A_BOLD);  // Green bold = live
+            mvprintw(startRow, col, "##");
+            attroff(COLOR_PAIR(1) | A_BOLD);
+        } else {
+            attron(A_DIM);
+            mvprintw(startRow, col, "..");
+            attroff(A_DIM);
+        }
+        col += 3;
+    }
+
+    // Show threshold value
+    mvprintw(startRow + 1, 8, "threshold: %.4f", snap.liveThreshold);
 }
 
 void Tui::drawLoops(int startRow) {

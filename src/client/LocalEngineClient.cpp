@@ -121,12 +121,27 @@ void LocalEngineClient::poll() {
         snap_.pendingOps.push_back(std::move(pos));
     }
 
+    // Input channel live status
+    {
+        int numCh = engine_.numInputChannels();
+        uint64_t mask = engine_.liveChannelMask();
+        auto peaks = engine_.channelPeaksSnapshot();
+        snap_.inputChannels.resize(static_cast<size_t>(numCh));
+        for (int ch = 0; ch < numCh; ++ch) {
+            auto& cs = snap_.inputChannels[static_cast<size_t>(ch)];
+            cs.live = (mask >> ch) & 1;
+            cs.peakLevel = (ch < static_cast<int>(peaks.size()))
+                ? peaks[static_cast<size_t>(ch)] : 0.0f;
+        }
+    }
+
     // Settings
     snap_.defaultQuantize = engine_.defaultQuantize();
     snap_.lookbackBars = engine_.lookbackBars();
     snap_.clickEnabled = engine_.metronomeClickEnabled();
     snap_.midiSyncEnabled = engine_.midiSyncEnabled();
     snap_.midiOutputAvailable = engine_.midiSync().hasOutput();
+    snap_.liveThreshold = engine_.liveThreshold();
 
     // Drain buffered messages
     {
