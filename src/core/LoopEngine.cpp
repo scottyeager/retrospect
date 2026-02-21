@@ -51,6 +51,8 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
     for (int i = 0; i < numInputChannels; ++i) {
         inputChannels_.emplace_back(ringCapacity, activityWindowSamples);
     }
+    channelPeaksSnapshot_.resize(static_cast<size_t>(numInputChannels), 0.0f);
+
     for (int i = 0; i < maxLoops; ++i) {
         loops_[static_cast<size_t>(i)].setId(i);
         loops_[static_cast<size_t>(i)].setCrossfadeSamples(crossfadeSamples_);
@@ -127,6 +129,28 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
         // Advance metronome and MIDI sync by 1 sample
         metronome_.advance(1);
         midiSync_.advance(1);
+    }
+
+    // Update live channel bitmask (lock-free, always updated)
+    {
+        uint64_t mask = 0;
+        for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+            if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
+                mask |= (uint64_t(1) << ch);
+            }
+        }
+        liveChannelMask_.store(mask, std::memory_order_relaxed);
+    }
+
+    // Update display snapshot (non-blocking)
+    {
+        std::unique_lock<std::mutex> lock(displayMutex_, std::try_to_lock);
+        if (lock.owns_lock()) {
+            for (int ch = 0; ch < engineChannels; ++ch) {
+                channelPeaksSnapshot_[static_cast<size_t>(ch)] =
+                    inputChannels_[static_cast<size_t>(ch)].peakLevel();
+            }
+        }
     }
 }
 
@@ -639,5 +663,11 @@ void LoopEngine::drainCommands() {
         }
     }
 }
+
+std::vector<float> LoopEngine::channelPeaksSnapshot() const {
+    std::lock_guard<std::mutex> lock(displayMutex_);
+    return channelPeaksSnapshot_;
+}
+
 
 } // namespace retrospect

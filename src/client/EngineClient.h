@@ -47,11 +47,18 @@ struct PendingOpSnapshot {
     int64_t executeSample = 0;
 };
 
+/// Snapshot of a single input channel for display
+struct InputChannelSnapshot {
+    float peakLevel = 0.0f;
+    bool live = false;
+};
+
 /// Complete engine state snapshot, updated once per TUI frame
 struct EngineSnapshot {
     MetronomeSnapshot metronome;
     std::vector<LoopSnapshot> loops;
     std::vector<PendingOpSnapshot> pendingOps;
+    std::vector<InputChannelSnapshot> inputChannels;
 
     bool isRecording = false;
     int recordingLoopIndex = -1;
@@ -61,6 +68,7 @@ struct EngineSnapshot {
     bool clickEnabled = true;
     bool midiSyncEnabled = false;
     bool midiOutputAvailable = false;
+    float liveThreshold = 0.0f;
     double sampleRate = 44100.0;
     int maxLoops = 8;
     int activeLoopCount = 0;

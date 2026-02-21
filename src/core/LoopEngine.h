@@ -4,7 +4,6 @@
 #include "core/MetronomeClick.h"
 #include "core/MidiSync.h"
 #include "core/InputChannel.h"
-#include "core/RingBuffer.h"
 #include "core/Loop.h"
 #include "core/SpscQueue.h"
 
@@ -14,6 +13,7 @@
 #include <string>
 #include <optional>
 #include <atomic>
+#include <mutex>
 
 namespace retrospect {
 
@@ -140,10 +140,6 @@ public:
     /// Number of input channels
     int numInputChannels() const { return static_cast<int>(inputChannels_.size()); }
 
-    /// First input channel's ring buffer (convenience, backward-compatible)
-    RingBuffer& ringBuffer() { return inputChannels_[0].ringBuffer(); }
-    const RingBuffer& ringBuffer() const { return inputChannels_[0].ringBuffer(); }
-
     Loop& loop(int index) { return loops_[static_cast<size_t>(index)]; }
     const Loop& loop(int index) const { return loops_[static_cast<size_t>(index)]; }
 
@@ -183,6 +179,13 @@ public:
     /// Channels with peak level below this threshold are considered inactive.
     float liveThreshold() const { return liveThreshold_; }
     void setLiveThreshold(float t) { liveThreshold_ = t; }
+
+    /// Bitmask of which input channels are currently live (thread-safe).
+    /// Bit N is set if channel N is live.
+    uint64_t liveChannelMask() const { return liveChannelMask_.load(std::memory_order_relaxed); }
+
+    /// Per-channel peak levels snapshot (mutex-protected, updated from audio thread)
+    std::vector<float> channelPeaksSnapshot() const;
 
     /// Metronome click (audible beat indicator)
     bool metronomeClickEnabled() const { return click_.isEnabled(); }
@@ -250,9 +253,12 @@ private:
     // Thread safety: TUI -> Audio command queue
     SpscQueue<EngineCommand, 256> commandQueue_;
 
-    // Thread safety: Audio -> TUI display
+    // Thread safety: Audio -> TUI display snapshot
+    mutable std::mutex displayMutex_;
+    std::vector<float> channelPeaksSnapshot_;
     std::atomic<bool> isRecordingAtomic_{false};
     std::atomic<int> recordingLoopIdxAtomic_{-1};
+    std::atomic<uint64_t> liveChannelMask_{0};
 };
 
 } // namespace retrospect
