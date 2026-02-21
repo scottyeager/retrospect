@@ -10,10 +10,8 @@
 #include <vector>
 #include <memory>
 #include <functional>
-#include <deque>
 #include <string>
 #include <optional>
-#include <mutex>
 #include <atomic>
 
 namespace retrospect {
@@ -35,20 +33,8 @@ enum class OpType {
     ClearLoop        // Clear a loop
 };
 
-/// A pending operation waiting for its quantization boundary
-struct PendingOp {
-    OpType type;
-    int loopIndex = -1;         // Target loop (-1 for new/next available)
-    int64_t executeSample = 0;  // Sample at which to execute
-    Quantize quantize = Quantize::Bar;
-    double speedValue = 1.0;    // For SetSpeed
-
-    /// Lookback duration in samples for CaptureLoop
-    int64_t lookbackSamples = 0;
-
-    /// Human-readable description
-    std::string description() const;
-};
+/// Human-readable description for an OpType
+std::string opTypeDescription(OpType type);
 
 /// Callback for engine state changes (used by TUI)
 struct EngineCallbacks {
@@ -148,11 +134,6 @@ public:
     int maxLoops() const { return static_cast<int>(loops_.size()); }
     int activeLoopCount() const;
 
-    const std::deque<PendingOp>& pendingOps() const { return pendingOps_; }
-
-    /// Thread-safe snapshot of pending ops (for TUI display)
-    std::vector<PendingOp> pendingOpsSnapshot() const;
-
     /// Enqueue a command from the TUI thread (lock-free)
     void enqueueCommand(const EngineCommand& cmd);
 
@@ -208,26 +189,29 @@ public:
     std::string statusMessage() const;
 
 private:
-    void executeOp(const PendingOp& op);
-    void executeCaptureLoop(const PendingOp& op);
-    void executeRecord(const PendingOp& op);
-    void executeStopRecord(const PendingOp& op);
+    /// Execute pending ops for a loop that are due at currentSample
+    void flushDueOps(Loop& lp, int64_t currentSample);
 
-    /// Drain commands from the SPSC queue into pendingOps_ (audio thread)
+    /// Fulfill a capture operation (reads from ring buffer)
+    void fulfillCapture(Loop& lp, const PendingCapture& cap);
+
+    /// Start a classic recording into a loop
+    void fulfillRecord(Loop& lp);
+
+    /// Stop a classic recording
+    void fulfillStopRecord(Loop& lp);
+
+    /// Drain commands from the SPSC queue into loop pending state (audio thread)
     void drainCommands();
 
     /// Compute executeSample for a given quantize mode (audio thread)
     int64_t computeExecuteSample(Quantize quantize) const;
-
-    /// Insert a PendingOp sorted by execution time
-    void insertPendingOp(PendingOp op);
 
     Metronome metronome_;
     MetronomeClick click_;
     MidiSync midiSync_;
     RingBuffer ringBuffer_;
     std::vector<Loop> loops_;
-    std::deque<PendingOp> pendingOps_;
 
     std::optional<ActiveRecording> activeRecording_;
 
@@ -244,9 +228,7 @@ private:
     // Thread safety: TUI -> Audio command queue
     SpscQueue<EngineCommand, 256> commandQueue_;
 
-    // Thread safety: Audio -> TUI display snapshot
-    mutable std::mutex displayMutex_;
-    std::vector<PendingOp> pendingOpsSnapshot_;
+    // Thread safety: Audio -> TUI display
     std::atomic<bool> isRecordingAtomic_{false};
     std::atomic<int> recordingLoopIdxAtomic_{-1};
 };

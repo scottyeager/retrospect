@@ -44,6 +44,7 @@ struct PendingOpSnapshot {
     int loopIndex = -1;
     Quantize quantize = Quantize::Bar;
     std::string description;
+    int64_t executeSample = 0;
 };
 
 /// Complete engine state snapshot, updated once per TUI frame

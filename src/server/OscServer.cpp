@@ -151,15 +151,38 @@ void OscServer::pushStateTo(lo_address addr) {
             engine_.midiSyncEnabled() ? 1 : 0,
             engine_.midiSync().hasOutput() ? 1 : 0);
 
-    // Pending ops: send clear first, then each op
+    // Pending ops: send clear first, then each op from loop-level state
     lo_send(addr, "/retro/state/pending_clear", "");
 
-    auto ops = engine_.pendingOpsSnapshot();
-    for (const auto& op : ops) {
-        lo_send(addr, "/retro/state/pending_op", "iis",
-                op.loopIndex,
-                quantizeToInt(op.quantize),
-                op.description().c_str());
+    for (int i = 0; i < engine_.maxLoops(); ++i) {
+        const auto& lp = engine_.loop(i);
+        const auto& ps = lp.pendingState();
+        auto sendOp = [&](const char* desc, Quantize q) {
+            lo_send(addr, "/retro/state/pending_op", "iis",
+                    i, quantizeToInt(q), desc);
+        };
+        if (ps.capture) sendOp("Capture Loop", ps.capture->quantize);
+        if (ps.record) {
+            const char* desc = (ps.recordOp == PendingState::RecordOp::Start) ? "Record" : "Stop Record";
+            sendOp(desc, ps.record->quantize);
+        }
+        if (ps.mute) {
+            const char* desc = "Toggle Mute";
+            if (ps.muteOp == PendingState::MuteOp::Mute) desc = "Mute";
+            else if (ps.muteOp == PendingState::MuteOp::Unmute) desc = "Unmute";
+            sendOp(desc, ps.mute->quantize);
+        }
+        if (ps.overdub) {
+            const char* desc = (ps.overdubOp == PendingState::OverdubOp::Start) ? "Start Overdub" : "Stop Overdub";
+            sendOp(desc, ps.overdub->quantize);
+        }
+        if (ps.reverse) sendOp("Reverse", ps.reverse->quantize);
+        if (ps.speed) sendOp("Set Speed", ps.speed->quantize);
+        if (ps.undo) {
+            const char* desc = (ps.undo->direction == UndoDirection::Undo) ? "Undo Layer" : "Redo Layer";
+            sendOp(desc, ps.undo->quantize);
+        }
+        if (ps.clear) sendOp("Clear", ps.clear->quantize);
     }
 
     // Log messages
