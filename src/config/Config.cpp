@@ -97,6 +97,24 @@ Config Config::load() {
         }
     }
 
+    // [input]
+    if (auto v = tbl["input"]["live_threshold"].value<double>()) {
+        if (*v >= 0.0 && *v <= 1.0) {
+            cfg.liveThreshold = static_cast<float>(*v);
+        } else {
+            fprintf(stderr, "Warning: invalid input.live_threshold %.4f, using default %.4f\n",
+                    *v, static_cast<double>(cfg.liveThreshold));
+        }
+    }
+    if (auto v = tbl["input"]["live_window_ms"].value<int64_t>()) {
+        if (*v >= 10 && *v <= 10000) {
+            cfg.liveWindowMs = static_cast<int>(*v);
+        } else {
+            fprintf(stderr, "Warning: invalid input.live_window_ms %lld, using default %d\n",
+                    static_cast<long long>(*v), cfg.liveWindowMs);
+        }
+    }
+
     // [metronome]
     if (auto v = tbl["metronome"]["bpm"].value<double>()) {
         if (*v >= 20.0 && *v <= 300.0) {

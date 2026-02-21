@@ -3,6 +3,7 @@
 #include "core/Metronome.h"
 #include "core/MetronomeClick.h"
 #include "core/MidiSync.h"
+#include "core/InputChannel.h"
 #include "core/RingBuffer.h"
 #include "core/Loop.h"
 #include "core/SpscQueue.h"
@@ -98,14 +99,21 @@ public:
     /// @param maxLookbackBars Maximum lookback in bars
     /// @param sampleRate Audio sample rate
     /// @param minBpm Minimum expected BPM (used to size ring buffer)
+    /// @param numInputChannels Number of input channels (each gets a ring buffer)
+    /// @param liveThreshold Activity threshold (0 = disabled, all channels pass)
+    /// @param liveWindowMs Activity detection window in milliseconds
     LoopEngine(int maxLoops = 8, int maxLookbackBars = 8,
-               double sampleRate = 44100.0, double minBpm = 60.0);
+               double sampleRate = 44100.0, double minBpm = 60.0,
+               int numInputChannels = 1, float liveThreshold = 0.0f,
+               int liveWindowMs = 500);
 
-    /// Process a block of audio. In real use, called from audio callback.
-    /// @param input Input audio buffer (mono)
+    /// Process a block of multi-channel audio.
+    /// @param input Array of per-channel input buffers (may be nullptr for missing channels)
+    /// @param numInputChannels Number of input channel pointers
     /// @param output Output audio buffer (mono, will be summed into)
     /// @param numSamples Number of samples in this block
-    void processBlock(const float* input, float* output, int numSamples);
+    void processBlock(const float* const* input, int inputChannelCount,
+                      float* output, int numSamples);
 
     /// Schedule a quantized operation. The operation will be executed
     /// at the next quantization boundary (beat or bar).
@@ -139,8 +147,16 @@ public:
     Metronome& metronome() { return metronome_; }
     const Metronome& metronome() const { return metronome_; }
 
-    RingBuffer& ringBuffer() { return ringBuffer_; }
-    const RingBuffer& ringBuffer() const { return ringBuffer_; }
+    /// Access a specific input channel
+    InputChannel& inputChannel(int index) { return inputChannels_[static_cast<size_t>(index)]; }
+    const InputChannel& inputChannel(int index) const { return inputChannels_[static_cast<size_t>(index)]; }
+
+    /// Number of input channels
+    int numInputChannels() const { return static_cast<int>(inputChannels_.size()); }
+
+    /// First input channel's ring buffer (convenience, backward-compatible)
+    RingBuffer& ringBuffer() { return inputChannels_[0].ringBuffer(); }
+    const RingBuffer& ringBuffer() const { return inputChannels_[0].ringBuffer(); }
 
     Loop& loop(int index) { return loops_[static_cast<size_t>(index)]; }
     const Loop& loop(int index) const { return loops_[static_cast<size_t>(index)]; }
@@ -181,6 +197,11 @@ public:
     /// Monitoring: pass-through input to output
     bool inputMonitoring() const { return inputMonitoring_; }
     void setInputMonitoring(bool on) { inputMonitoring_ = on; }
+
+    /// Live channel detection threshold (0 = disabled, all channels pass).
+    /// Channels with peak level below this threshold are considered inactive.
+    float liveThreshold() const { return liveThreshold_; }
+    void setLiveThreshold(float t) { liveThreshold_ = t; }
 
     /// Metronome click (audible beat indicator)
     bool metronomeClickEnabled() const { return click_.isEnabled(); }
@@ -225,7 +246,7 @@ private:
     Metronome metronome_;
     MetronomeClick click_;
     MidiSync midiSync_;
-    RingBuffer ringBuffer_;
+    std::vector<InputChannel> inputChannels_;
     std::vector<Loop> loops_;
     std::deque<PendingOp> pendingOps_;
 
@@ -237,6 +258,7 @@ private:
     int crossfadeSamples_ = 256;
     double sampleRate_;
     bool inputMonitoring_ = false;
+    float liveThreshold_ = 0.0f;
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;

@@ -35,15 +35,12 @@ public:
             int numSamples,
             const juce::AudioIODeviceCallbackContext&) override {
 
-        // Extract mono input (channel 0, or silence)
-        const float* input = (numInputChannels > 0 && inputChannelData[0])
-            ? inputChannelData[0] : nullptr;
-
-        // Extract mono output (channel 0)
+        // Pass all input channels to the engine for per-channel ring
+        // buffering and live-activity detection.
         float* output = (numOutputChannels > 0 && outputChannelData[0])
             ? outputChannelData[0] : nullptr;
 
-        engine_.processBlock(input, output, numSamples);
+        engine_.processBlock(inputChannelData, numInputChannels, output, numSamples);
 
         // Clear any remaining output channels
         for (int ch = 1; ch < numOutputChannels; ++ch) {
@@ -226,7 +223,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto error = deviceManager.initialise(1, 1, nullptr, true);
+    // Request up to 64 input channels; the device will provide what it supports
+    auto error = deviceManager.initialise(64, 1, nullptr, true);
     if (error.isNotEmpty()) {
         fprintf(stderr, "Audio device error: %s\n", error.toRawUTF8());
         return 1;
@@ -240,13 +238,17 @@ int main(int argc, char* argv[]) {
 
     double sampleRate = device->getCurrentSampleRate();
     int bufferSize = device->getCurrentBufferSizeSamples();
+    int numInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
+    if (numInputChannels < 1) numInputChannels = 1;
 
     fprintf(stderr, "Using audio device: %s\n", device->getName().toRawUTF8());
     fprintf(stderr, "  Sample rate: %.0f Hz\n", sampleRate);
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
+    fprintf(stderr, "  Input channels: %d\n", numInputChannels);
 
-    // Create engine
-    retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm);
+    // Create engine with per-channel ring buffers and live detection
+    retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
+                                  numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
 
     // Apply config values to engine
     engine.metronome().setBpm(cfg.bpm);

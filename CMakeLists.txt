@@ -41,6 +41,7 @@ add_library(retrospect_core STATIC
     src/core/Metronome.cpp
     src/core/MidiSync.cpp
     src/core/RingBuffer.cpp
+    src/core/InputChannel.cpp
     src/core/Loop.cpp
     src/core/LoopEngine.cpp
 )
