@@ -311,7 +311,7 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow, 0, "CONTROLS");
     attroff(A_BOLD);
 
-    mvprintw(startRow + 1, 2, "1-8: Select loop    SPACE: Capture loop    r: Record/stop");
+    mvprintw(startRow + 1, 2, "1-8/Up/Dn: Loop     SPACE: Capture loop    r: Record/stop");
     mvprintw(startRow + 2, 2, "m: Mute/unmute      v: Reverse             o/O: Overdub on/off");
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
@@ -342,6 +342,14 @@ void Tui::handleKey(int key) {
         case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8':
             selectedLoop_ = key - '1';
+            break;
+
+        // Loop navigation: up/down arrows (with wrap)
+        case KEY_UP:
+            selectedLoop_ = (selectedLoop_ - 1 + snap.maxLoops) % snap.maxLoops;
+            break;
+        case KEY_DOWN:
+            selectedLoop_ = (selectedLoop_ + 1) % snap.maxLoops;
             break;
 
         // Capture loop from ring buffer
