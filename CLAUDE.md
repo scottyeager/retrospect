@@ -175,3 +175,11 @@ enum class OpType    { CaptureLoop, Record, StopRecord, Mute, Unmute, ToggleMute
 ## Adding New Source Files
 
 When adding a `.cpp` file, add it to the appropriate `add_library()` call in `CMakeLists.txt`. Header-only files don't need CMake changes.
+
+## Adding New Config Options
+
+When adding a new config option, update all three places:
+
+1. **`src/config/Config.h`** — Add the field with its default value to the `Config` struct.
+2. **`src/config/Config.cpp`** — Parse the option from the TOML file in `Config::load()`.
+3. **`config.toml`** — Add a commented-out entry with a description in the appropriate section. This file serves as the reference for all available options.

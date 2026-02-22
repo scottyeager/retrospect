@@ -27,6 +27,9 @@
 # Default number of bars to capture from the ring buffer (1-max_lookback_bars)
 # lookback_bars = 1
 
+# Automatically compensate for audio round-trip latency in capture/recording
+# latency_compensation = true
+
 [input]
 # Peak level threshold for live channel detection (0.0-1.0)
 # 0 disables detection (all channels treated as live).
