@@ -16,8 +16,11 @@ set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
 set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 
-# Search paths: find libraries/headers in the target sysroot, programs on the host
-set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+# Debian multiarch: arm64 libs live in /usr/lib/aarch64-linux-gnu/
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
+
+# Search under both the cross-compiler sysroot and /usr (for Debian multiarch paths)
+set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu /usr)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
