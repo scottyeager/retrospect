@@ -206,6 +206,10 @@ public:
     /// Set callbacks
     void setCallbacks(EngineCallbacks cb);
 
+    /// Register a callback that fires when BPM changes at the audio level.
+    /// Useful for propagating tempo changes to external systems (e.g. JACK transport).
+    void setBpmChangedCallback(std::function<void(double)> cb) { bpmChangedCallback_ = std::move(cb); }
+
     /// Find the next available (empty) loop slot. Returns -1 if all full.
     int nextEmptySlot() const;
 
@@ -249,6 +253,8 @@ private:
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;
+
+    std::function<void(double)> bpmChangedCallback_;
 
     // Thread safety: TUI -> Audio command queue
     SpscQueue<EngineCommand, 256> commandQueue_;

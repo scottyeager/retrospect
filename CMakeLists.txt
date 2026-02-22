@@ -13,6 +13,7 @@ find_package(Curses REQUIRED)
 # Find liblo (OSC library)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBLO REQUIRED liblo)
+pkg_check_modules(JACK REQUIRED jack)
 
 if(RETROSPECT_STATIC_DEPS)
     # Static ncurses on Debian needs tinfo
@@ -94,7 +95,10 @@ target_compile_options(retrospect_tui PRIVATE -Wall -Wextra -Wpedantic)
 juce_add_console_app(retrospect
     PRODUCT_NAME "Retrospect"
 )
-target_sources(retrospect PRIVATE src/audio_main.cpp)
+target_sources(retrospect PRIVATE
+    src/audio_main.cpp
+    src/JackTransport.cpp
+)
 target_link_libraries(retrospect PRIVATE
     retrospect_config
     retrospect_core
@@ -106,7 +110,9 @@ target_link_libraries(retrospect PRIVATE
     juce::juce_audio_formats
     juce::juce_audio_utils
     juce::juce_core
+    ${JACK_LIBRARIES}
 )
+target_include_directories(retrospect PRIVATE ${JACK_INCLUDE_DIRS})
 target_compile_definitions(retrospect PRIVATE
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
