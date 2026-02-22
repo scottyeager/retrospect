@@ -177,15 +177,20 @@ void Tui::drawMetronome(int row) {
     std::string midiStr = snap.midiOutputAvailable
         ? (snap.midiSyncEnabled ? "ON" : "OFF")
         : "N/A";
+    int settingsLen = snprintf(nullptr, 0,
+        "Quantize: %s  Lookback: %d bar(s)  Click: %s  MIDI: %s",
+        qmode.c_str(), snap.lookbackBars,
+        snap.clickEnabled ? "ON" : "OFF",
+        midiStr.c_str());
     mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s  MIDI: %s",
              qmode.c_str(), snap.lookbackBars,
              snap.clickEnabled ? "ON" : "OFF",
              midiStr.c_str());
 
-    // Recording indicator
+    // Recording indicator — placed after the settings text
     if (snap.isRecording) {
         attron(COLOR_PAIR(3) | A_BOLD);
-        mvprintw(row + 2, 40, "** REC Loop %d **", snap.recordingLoopIndex);
+        mvprintw(row + 2, 2 + settingsLen + 2, "** REC Loop %d **", snap.recordingLoopIndex);
         attroff(COLOR_PAIR(3) | A_BOLD);
     }
 }
