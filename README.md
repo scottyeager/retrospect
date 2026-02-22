@@ -65,6 +65,22 @@ All operations are quantized to the internal metronome. When quantize mode is se
 - **Capture** (Space) - Grab the last N bars from the ring buffer. The lookback is always recording, so you never miss a moment.
 - **Record** (R) - Traditional looper behavior. Press to start at the next quantize boundary, press again to stop. Loop length is set by the recording duration.
 
+## Cross-compiling for ARM64
+
+Build an ARM64 binary using a containerized Debian cross-toolchain (works from any host distro). Requires Docker or Podman.
+
+```
+make cross-arm64-extract
+```
+
+This builds inside a container and copies the binary to `build/arm64/retrospect`. The Makefile auto-detects Podman, falling back to Docker.
+
+To just build the container image without extracting:
+
+```
+make cross-arm64
+```
+
 ## JUCE Audio Backend
 
 The core logic is independent of JUCE. To build with real audio I/O (requires JUCE dependencies):
