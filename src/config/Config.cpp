@@ -96,6 +96,9 @@ Config Config::load() {
                     static_cast<long long>(*v), cfg.lookbackBars);
         }
     }
+    if (auto v = tbl["engine"]["latency_compensation"].value<bool>()) {
+        cfg.latencyCompensation = *v;
+    }
 
     // [input]
     if (auto v = tbl["input"]["live_threshold"].value<double>()) {

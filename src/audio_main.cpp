@@ -257,7 +257,9 @@ int main(int argc, char* argv[]) {
     // Create engine with per-channel ring buffers and live detection
     retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
                                   numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
-    engine.setLatencyCompensation(static_cast<int64_t>(roundTripLatency));
+    if (cfg.latencyCompensation) {
+        engine.setLatencyCompensation(static_cast<int64_t>(roundTripLatency));
+    }
 
     // Apply config values to engine
     engine.metronome().setBpm(cfg.bpm);

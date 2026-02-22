@@ -15,6 +15,7 @@ struct Config {
     std::string defaultQuantize = "bar";  // "free", "beat", "bar"
     int crossfadeSamples = 256;
     int lookbackBars = 1;
+    bool latencyCompensation = true;      // Auto-compensate round-trip latency
 
     // [input]
     float liveThreshold = 0.0f;          // 0 = disabled (all channels pass)
