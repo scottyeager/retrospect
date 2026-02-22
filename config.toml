@@ -1,0 +1,64 @@
+# Retrospect default configuration
+# Copy to ~/.config/retrospect/config.toml (or $XDG_CONFIG_HOME/retrospect/config.toml)
+# All values shown are the defaults. Uncomment and modify as needed.
+
+[audio]
+# Audio backend: "" (auto), "jack", or "alsa"
+# backend = ""
+
+[engine]
+# Number of loop slots (1-64)
+# max_loops = 8
+
+# Maximum ring buffer lookback in bars (1-64)
+# Determines ring buffer size at startup — larger values use more memory.
+# max_lookback_bars = 8
+
+# Minimum BPM used for ring buffer sizing (20.0-300.0)
+# Lower values require a larger buffer to hold the same number of bars.
+# min_bpm = 60.0
+
+# Default quantize mode: "free", "beat", or "bar"
+# default_quantize = "bar"
+
+# Crossfade length in samples at loop boundaries (0-4096)
+# crossfade_samples = 256
+
+# Default number of bars to capture from the ring buffer (1-max_lookback_bars)
+# lookback_bars = 1
+
+[input]
+# Peak level threshold for live channel detection (0.0-1.0)
+# 0 disables detection (all channels treated as live).
+# live_threshold = 0.0
+
+# Activity detection window in milliseconds (10-10000)
+# live_window_ms = 500
+
+[metronome]
+# Tempo in beats per minute (20.0-300.0)
+# bpm = 120.0
+
+# Beats per bar / time signature numerator (1-16)
+# beats_per_bar = 4
+
+# Enable audible metronome click
+# click_enabled = true
+
+# Click volume (0.0-1.0)
+# click_volume = 0.5
+
+[midi]
+# Send MIDI clock sync (24 PPQN)
+# sync_enabled = false
+
+# MIDI output device name (empty string = virtual device)
+# output_device = ""
+
+[osc]
+# OSC server port (string or integer)
+# port = 7770
+
+[tui]
+# TUI refresh interval in milliseconds (10-1000)
+# refresh_ms = 33
