@@ -1,0 +1,23 @@
+FROM debian:bookworm-slim
+
+RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    g++-aarch64-linux-gnu \
+    libncurses-dev:arm64 \
+    liblo-dev:arm64 \
+    libasound2-dev:arm64 \
+    libjack-jackd2-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY cmake/ cmake/
+COPY CMakeLists.txt .
+COPY src/ src/
+
+RUN cmake -B build \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake \
+    -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build -j$(nproc)
