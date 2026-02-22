@@ -32,6 +32,8 @@ struct LoopSnapshot {
     bool reversed = false;
     int64_t playPosition = 0;
     int64_t lengthSamples = 0;
+    double recordedBpm = 0.0;
+    bool timeStretchActive = false;
 
     bool isEmpty() const { return state == LoopState::Empty; }
     bool isMuted() const { return state == LoopState::Muted; }
@@ -44,6 +46,13 @@ struct PendingOpSnapshot {
     int loopIndex = -1;
     Quantize quantize = Quantize::Bar;
     std::string description;
+    int64_t executeSample = 0;
+};
+
+/// Snapshot of a single input channel for display
+struct InputChannelSnapshot {
+    float peakLevel = 0.0f;
+    bool live = false;
 };
 
 /// Snapshot of a single input channel for display

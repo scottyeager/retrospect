@@ -96,6 +96,27 @@ Config Config::load() {
                     static_cast<long long>(*v), cfg.lookbackBars);
         }
     }
+    if (auto v = tbl["engine"]["latency_compensation"].value<bool>()) {
+        cfg.latencyCompensation = *v;
+    }
+
+    // [input]
+    if (auto v = tbl["input"]["live_threshold"].value<double>()) {
+        if (*v >= 0.0 && *v <= 1.0) {
+            cfg.liveThreshold = static_cast<float>(*v);
+        } else {
+            fprintf(stderr, "Warning: invalid input.live_threshold %.4f, using default %.4f\n",
+                    *v, static_cast<double>(cfg.liveThreshold));
+        }
+    }
+    if (auto v = tbl["input"]["live_window_ms"].value<int64_t>()) {
+        if (*v >= 10 && *v <= 10000) {
+            cfg.liveWindowMs = static_cast<int>(*v);
+        } else {
+            fprintf(stderr, "Warning: invalid input.live_window_ms %lld, using default %d\n",
+                    static_cast<long long>(*v), cfg.liveWindowMs);
+        }
+    }
 
     // [input]
     if (auto v = tbl["input"]["live_threshold"].value<double>()) {

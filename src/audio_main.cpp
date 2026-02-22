@@ -5,6 +5,7 @@
 #include "client/LocalEngineClient.h"
 #include "client/OscEngineClient.h"
 #include "server/OscServer.h"
+#include "JackTransport.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_core/juce_core.h>
@@ -241,14 +242,24 @@ int main(int argc, char* argv[]) {
     int numInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
     if (numInputChannels < 1) numInputChannels = 1;
 
+    int outputLatency = device->getOutputLatencyInSamples();
+    int inputLatency = device->getInputLatencyInSamples();
+    int roundTripLatency = outputLatency + inputLatency;
+
     fprintf(stderr, "Using audio device: %s\n", device->getName().toRawUTF8());
     fprintf(stderr, "  Sample rate: %.0f Hz\n", sampleRate);
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
     fprintf(stderr, "  Input channels: %d\n", numInputChannels);
+    fprintf(stderr, "  Latency: %d in + %d out = %d samples (%.1f ms)\n",
+            inputLatency, outputLatency, roundTripLatency,
+            1000.0 * roundTripLatency / sampleRate);
 
     // Create engine with per-channel ring buffers and live detection
     retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
                                   numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
+    if (cfg.latencyCompensation) {
+        engine.setLatencyCompensation(static_cast<int64_t>(roundTripLatency));
+    }
 
     // Apply config values to engine
     engine.metronome().setBpm(cfg.bpm);
@@ -289,6 +300,28 @@ int main(int argc, char* argv[]) {
         });
     }
 
+    // JACK transport: act as timebase master when using the JACK backend
+    std::unique_ptr<retrospect::JackTransport> jackTransport;
+    {
+        auto* currentDevice = deviceManager.getCurrentAudioDevice();
+        bool isJackBackend = currentDevice &&
+            currentDevice->getTypeName().containsIgnoreCase("jack");
+        if (isJackBackend) {
+            jackTransport = std::make_unique<retrospect::JackTransport>(sampleRate);
+            if (jackTransport->init()) {
+                jackTransport->setBpm(cfg.bpm);
+                jackTransport->setBeatsPerBar(cfg.beatsPerBar);
+                jackTransport->rewind();
+                jackTransport->start();
+                engine.setBpmChangedCallback([&jackTransport](double bpm) {
+                    if (jackTransport) jackTransport->setBpm(bpm);
+                });
+            } else {
+                jackTransport.reset();
+            }
+        }
+    }
+
     // Create and register audio callback
     AudioCallback audioCallback(engine);
     deviceManager.addAudioCallback(&audioCallback);
@@ -304,6 +337,9 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Running headless on port %s\n", cfg.oscPort.c_str());
         if (midiOutput) {
             fprintf(stderr, "MIDI sync output: enabled\n");
+        }
+        if (jackTransport) {
+            fprintf(stderr, "JACK transport: master\n");
         }
         fprintf(stderr, "Press Ctrl+C to stop\n");
 
@@ -321,8 +357,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Stop MIDI sync before shutting down
+        // Stop MIDI sync and JACK transport before shutting down
         engine.setMidiSyncEnabled(false);
+        if (jackTransport) jackTransport->shutdown();
         oscServer.stop();
         deviceManager.removeAudioCallback(&audioCallback);
         return 0;
@@ -348,13 +385,18 @@ int main(int argc, char* argv[]) {
     tui.addMessage("Retrospect started - JUCE audio active");
     tui.addMessage("Device: " + device->getName().toStdString());
     {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d", sampleRate, bufferSize);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d  Latency: %d samples (%.1fms)",
+                 sampleRate, bufferSize, roundTripLatency,
+                 1000.0 * roundTripLatency / sampleRate);
         tui.addMessage(buf);
     }
     tui.addMessage("OSC server on port " + cfg.oscPort);
     if (midiOutput) {
         tui.addMessage("MIDI sync output: " + midiOutput->getName().toStdString());
+    }
+    if (jackTransport) {
+        tui.addMessage("JACK transport: master");
     }
     tui.addMessage("Press 'q' to quit");
 
@@ -377,8 +419,9 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Cleanup - stop MIDI sync before shutting down
+    // Cleanup - stop MIDI sync and JACK transport before shutting down
     engine.setMidiSyncEnabled(false);
+    if (jackTransport) jackTransport->shutdown();
     oscServer.stop();
     deviceManager.removeAudioCallback(&audioCallback);
     tui.shutdown();

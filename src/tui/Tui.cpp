@@ -177,15 +177,20 @@ void Tui::drawMetronome(int row) {
     std::string midiStr = snap.midiOutputAvailable
         ? (snap.midiSyncEnabled ? "ON" : "OFF")
         : "N/A";
+    int settingsLen = snprintf(nullptr, 0,
+        "Quantize: %s  Lookback: %d bar(s)  Click: %s  MIDI: %s",
+        qmode.c_str(), snap.lookbackBars,
+        snap.clickEnabled ? "ON" : "OFF",
+        midiStr.c_str());
     mvprintw(row + 2, 2, "Quantize: %s  Lookback: %d bar(s)  Click: %s  MIDI: %s",
              qmode.c_str(), snap.lookbackBars,
              snap.clickEnabled ? "ON" : "OFF",
              midiStr.c_str());
 
-    // Recording indicator
+    // Recording indicator — placed after the settings text
     if (snap.isRecording) {
         attron(COLOR_PAIR(3) | A_BOLD);
-        mvprintw(row + 2, 40, "** REC Loop %d **", snap.recordingLoopIndex);
+        mvprintw(row + 2, 2 + settingsLen + 2, "** REC Loop %d **", snap.recordingLoopIndex);
         attroff(COLOR_PAIR(3) | A_BOLD);
     }
 }
@@ -305,12 +310,19 @@ void Tui::drawLoops(int startRow) {
                 mvprintw(row, 33, "R");
             }
 
+            // Stretch indicator
+            if (lp.timeStretchActive) {
+                attron(COLOR_PAIR(6));
+                mvprintw(row, 34, "S");
+                attroff(COLOR_PAIR(6));
+            }
+
             // Play position as percentage
             if (lp.lengthSamples > 0) {
                 int pct = static_cast<int>(
                     100.0 * static_cast<double>(lp.playPosition) /
                     static_cast<double>(lp.lengthSamples));
-                mvprintw(row, 35, "%3d%%", pct);
+                mvprintw(row, 36, "%3d%%", pct);
             }
         }
     }

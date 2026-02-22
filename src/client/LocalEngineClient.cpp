@@ -1,4 +1,5 @@
 #include "client/LocalEngineClient.h"
+#include <algorithm>
 
 namespace retrospect {
 
@@ -101,6 +102,8 @@ void LocalEngineClient::poll() {
         ls.reversed = lp.isReversed();
         ls.playPosition = lp.playPosition();
         ls.lengthSamples = lp.lengthSamples();
+        ls.recordedBpm = lp.recordedBpm();
+        ls.timeStretchActive = lp.isTimeStretchActive();
         if (!lp.isEmpty()) ++active;
     }
     snap_.activeLoopCount = active;
@@ -109,16 +112,64 @@ void LocalEngineClient::poll() {
     snap_.isRecording = engine_.isRecordingAtomic();
     snap_.recordingLoopIndex = engine_.recordingLoopIdxAtomic();
 
-    // Pending ops
-    auto ops = engine_.pendingOpsSnapshot();
+    // Pending ops — gathered from each loop's pending state
     snap_.pendingOps.clear();
-    snap_.pendingOps.reserve(ops.size());
-    for (const auto& op : ops) {
-        PendingOpSnapshot pos;
-        pos.loopIndex = op.loopIndex;
-        pos.quantize = op.quantize;
-        pos.description = op.description();
-        snap_.pendingOps.push_back(std::move(pos));
+    for (int i = 0; i < engine_.maxLoops(); ++i) {
+        const auto& lp = engine_.loop(i);
+        const auto& ps = lp.pendingState();
+        auto addOp = [&](const std::string& desc, Quantize q, int64_t execSample) {
+            PendingOpSnapshot pos;
+            pos.loopIndex = i;
+            pos.quantize = q;
+            pos.description = desc;
+            pos.executeSample = execSample;
+            snap_.pendingOps.push_back(std::move(pos));
+        };
+        if (ps.capture) addOp("Capture Loop", ps.capture->quantize, ps.capture->executeSample);
+        if (ps.record) {
+            std::string desc = (ps.recordOp == PendingState::RecordOp::Start) ? "Record" : "Stop Record";
+            addOp(desc, ps.record->quantize, ps.record->executeSample);
+        }
+        if (ps.mute) {
+            std::string desc;
+            switch (ps.muteOp) {
+                case PendingState::MuteOp::Mute:   desc = "Mute"; break;
+                case PendingState::MuteOp::Unmute:  desc = "Unmute"; break;
+                case PendingState::MuteOp::Toggle:  desc = "Toggle Mute"; break;
+            }
+            addOp(desc, ps.mute->quantize, ps.mute->executeSample);
+        }
+        if (ps.overdub) {
+            std::string desc = (ps.overdubOp == PendingState::OverdubOp::Start) ? "Start Overdub" : "Stop Overdub";
+            addOp(desc, ps.overdub->quantize, ps.overdub->executeSample);
+        }
+        if (ps.reverse) addOp("Reverse", ps.reverse->quantize, ps.reverse->executeSample);
+        if (ps.speed) addOp("Set Speed", ps.speed->quantize, ps.speed->executeSample);
+        if (ps.undo) {
+            std::string desc = (ps.undo->direction == UndoDirection::Undo) ? "Undo Layer" : "Redo Layer";
+            if (ps.undo->count > 1) desc += " x" + std::to_string(ps.undo->count);
+            addOp(desc, ps.undo->quantize, ps.undo->executeSample);
+        }
+        if (ps.clear) addOp("Clear", ps.clear->quantize, ps.clear->executeSample);
+    }
+    // Sort by execution time for display consistency
+    std::sort(snap_.pendingOps.begin(), snap_.pendingOps.end(),
+              [](const PendingOpSnapshot& a, const PendingOpSnapshot& b) {
+                  return a.executeSample < b.executeSample;
+              });
+
+    // Input channel live status
+    {
+        int numCh = engine_.numInputChannels();
+        uint64_t mask = engine_.liveChannelMask();
+        auto peaks = engine_.channelPeaksSnapshot();
+        snap_.inputChannels.resize(static_cast<size_t>(numCh));
+        for (int ch = 0; ch < numCh; ++ch) {
+            auto& cs = snap_.inputChannels[static_cast<size_t>(ch)];
+            cs.live = (mask >> ch) & 1;
+            cs.peakLevel = (ch < static_cast<int>(peaks.size()))
+                ? peaks[static_cast<size_t>(ch)] : 0.0f;
+        }
     }
 
     // Input channel live status

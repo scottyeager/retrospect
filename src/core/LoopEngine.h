@@ -10,11 +10,10 @@
 #include <vector>
 #include <memory>
 #include <functional>
-#include <deque>
 #include <string>
 #include <optional>
-#include <mutex>
 #include <atomic>
+#include <mutex>
 
 namespace retrospect {
 
@@ -35,20 +34,8 @@ enum class OpType {
     ClearLoop        // Clear a loop
 };
 
-/// A pending operation waiting for its quantization boundary
-struct PendingOp {
-    OpType type;
-    int loopIndex = -1;         // Target loop (-1 for new/next available)
-    int64_t executeSample = 0;  // Sample at which to execute
-    Quantize quantize = Quantize::Bar;
-    double speedValue = 1.0;    // For SetSpeed
-
-    /// Lookback duration in samples for CaptureLoop
-    int64_t lookbackSamples = 0;
-
-    /// Human-readable description
-    std::string description() const;
-};
+/// Human-readable description for an OpType
+std::string opTypeDescription(OpType type);
 
 /// Callback for engine state changes (used by TUI)
 struct EngineCallbacks {
@@ -159,11 +146,6 @@ public:
     int maxLoops() const { return static_cast<int>(loops_.size()); }
     int activeLoopCount() const;
 
-    const std::deque<PendingOp>& pendingOps() const { return pendingOps_; }
-
-    /// Thread-safe snapshot of pending ops (for TUI display)
-    std::vector<PendingOp> pendingOpsSnapshot() const;
-
     /// Enqueue a command from the TUI thread (lock-free)
     void enqueueCommand(const EngineCommand& cmd);
 
@@ -188,6 +170,12 @@ public:
     void setCrossfadeSamples(int samples) { crossfadeSamples_ = samples; }
 
     double sampleRate() const { return sampleRate_; }
+
+    /// Latency compensation in samples (round-trip: output + input).
+    /// When set, capture and recording operations offset their read positions
+    /// to align recorded audio with the metronome's internal timeline.
+    int64_t latencyCompensation() const { return latencyCompensation_; }
+    void setLatencyCompensation(int64_t samples) { latencyCompensation_ = std::max(int64_t(0), samples); }
 
     /// Monitoring: pass-through input to output
     bool inputMonitoring() const { return inputMonitoring_; }
@@ -224,6 +212,10 @@ public:
     /// Set callbacks
     void setCallbacks(EngineCallbacks cb);
 
+    /// Register a callback that fires when BPM changes at the audio level.
+    /// Useful for propagating tempo changes to external systems (e.g. JACK transport).
+    void setBpmChangedCallback(std::function<void(double)> cb) { bpmChangedCallback_ = std::move(cb); }
+
     /// Find the next available (empty) loop slot. Returns -1 if all full.
     int nextEmptySlot() const;
 
@@ -231,26 +223,29 @@ public:
     std::string statusMessage() const;
 
 private:
-    void executeOp(const PendingOp& op);
-    void executeCaptureLoop(const PendingOp& op);
-    void executeRecord(const PendingOp& op);
-    void executeStopRecord(const PendingOp& op);
+    /// Execute pending ops for a loop that are due at currentSample
+    void flushDueOps(Loop& lp, int64_t currentSample);
 
-    /// Drain commands from the SPSC queue into pendingOps_ (audio thread)
+    /// Fulfill a capture operation (reads from ring buffer)
+    void fulfillCapture(Loop& lp, const PendingCapture& cap);
+
+    /// Start a classic recording into a loop
+    void fulfillRecord(Loop& lp);
+
+    /// Stop a classic recording
+    void fulfillStopRecord(Loop& lp);
+
+    /// Drain commands from the SPSC queue into loop pending state (audio thread)
     void drainCommands();
 
     /// Compute executeSample for a given quantize mode (audio thread)
     int64_t computeExecuteSample(Quantize quantize) const;
-
-    /// Insert a PendingOp sorted by execution time
-    void insertPendingOp(PendingOp op);
 
     Metronome metronome_;
     MetronomeClick click_;
     MidiSync midiSync_;
     std::vector<InputChannel> inputChannels_;
     std::vector<Loop> loops_;
-    std::deque<PendingOp> pendingOps_;
 
     std::optional<ActiveRecording> activeRecording_;
 
@@ -259,18 +254,20 @@ private:
     int maxLookbackBars_;
     int crossfadeSamples_ = 256;
     double sampleRate_;
+    int64_t latencyCompensation_ = 0;
     bool inputMonitoring_ = false;
     float liveThreshold_ = 0.0f;
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;
 
+    std::function<void(double)> bpmChangedCallback_;
+
     // Thread safety: TUI -> Audio command queue
     SpscQueue<EngineCommand, 256> commandQueue_;
 
     // Thread safety: Audio -> TUI display snapshot
     mutable std::mutex displayMutex_;
-    std::vector<PendingOp> pendingOpsSnapshot_;
     std::vector<float> channelPeaksSnapshot_;
     std::atomic<bool> isRecordingAtomic_{false};
     std::atomic<int> recordingLoopIdxAtomic_{-1};
