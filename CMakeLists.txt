@@ -5,12 +5,27 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(RETROSPECT_STATIC_DEPS "Statically link liblo, ncurses, and libstdc++ for portable binaries" OFF)
+
 # Find ncurses
 find_package(Curses REQUIRED)
 
 # Find liblo (OSC library)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBLO REQUIRED liblo)
+
+if(RETROSPECT_STATIC_DEPS)
+    # Static ncurses on Debian needs tinfo
+    find_library(TINFO_LIBRARY tinfo)
+    if(TINFO_LIBRARY)
+        list(APPEND CURSES_LIBRARIES ${TINFO_LIBRARY})
+    endif()
+    # Static liblo needs its transitive deps (pthread, etc.)
+    set(LIBLO_LIBRARIES ${LIBLO_STATIC_LIBRARIES})
+    set(LIBLO_LIBRARY_DIRS ${LIBLO_STATIC_LIBRARY_DIRS})
+    # Portable C++ runtime
+    add_link_options(-static-libstdc++ -static-libgcc)
+endif()
 
 # Fetch JUCE
 include(FetchContent)

@@ -12,6 +12,15 @@ RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-i
     libjack-jackd2-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
+# Remove shared libs for deps we want to statically link.
+# The linker will fall back to the .a files from the -dev packages.
+# Keep libasound dynamic (standard on any Linux with audio) and
+# libjack (JUCE dlopen's it at runtime, no link-time dependency).
+RUN rm -f /usr/lib/aarch64-linux-gnu/liblo.so* \
+         /usr/lib/aarch64-linux-gnu/libncurses*.so* \
+         /usr/lib/aarch64-linux-gnu/libtinfo*.so* \
+         /usr/lib/aarch64-linux-gnu/libform*.so*
+
 WORKDIR /src
 COPY cmake/ cmake/
 COPY CMakeLists.txt .
@@ -20,4 +29,5 @@ COPY src/ src/
 RUN cmake -B build \
     -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake \
     -DCMAKE_BUILD_TYPE=Release \
+    -DRETROSPECT_STATIC_DEPS=ON \
     && cmake --build build -j$(nproc)
