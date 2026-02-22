@@ -652,6 +652,7 @@ void LoopEngine::drainCommands() {
             case CommandType::SetBpm: {
                 metronome_.setBpm(cmd.value);
                 midiSync_.setBpm(cmd.value);
+                if (bpmChangedCallback_) bpmChangedCallback_(cmd.value);
                 break;
             }
             case CommandType::CancelPending: {
