@@ -285,11 +285,15 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
 
     // Capture from each live input channel and mix down to mono.
     // A channel is considered live if it currently has activity above threshold.
+    // Apply latency compensation: read from further back in the ring buffer
+    // to align captured audio with the metronome's internal timeline.
+    int64_t samplesAgo = static_cast<int64_t>(captureLen) + latencyCompensation_;
     std::vector<float> audio(static_cast<size_t>(captureLen), 0.0f);
     int liveCount = 0;
     for (auto& ch : inputChannels_) {
         if (ch.isLive(liveThreshold_)) {
-            auto chAudio = ch.ringBuffer().capture(captureLen);
+            std::vector<float> chAudio(static_cast<size_t>(captureLen), 0.0f);
+            ch.ringBuffer().readFromPast(chAudio.data(), captureLen, samplesAgo);
             for (size_t j = 0; j < audio.size(); ++j) {
                 audio[j] += chAudio[j];
             }
@@ -360,7 +364,16 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
         return;
     }
 
-    if (activeRecording_->buffer.empty()) {
+    // Apply latency compensation: the first latencyCompensation_ samples in the
+    // buffer are audio from before the intended recording start (they were still
+    // in the hardware pipeline when recording began). Trim them so the loop
+    // content aligns with the metronome.
+    auto& buf = activeRecording_->buffer;
+    if (latencyCompensation_ > 0 && static_cast<int64_t>(buf.size()) > latencyCompensation_) {
+        buf.erase(buf.begin(), buf.begin() + latencyCompensation_);
+    }
+
+    if (buf.empty()) {
         lastMessage_ = "No audio recorded";
         activeRecording_.reset();
         isRecordingAtomic_.store(false, std::memory_order_relaxed);
@@ -370,7 +383,7 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
     }
 
     // Load the recorded audio into the loop
-    lp.loadFromCapture(std::move(activeRecording_->buffer));
+    lp.loadFromCapture(std::move(buf));
     lp.setCrossfadeSamples(crossfadeSamples_);
 
     double bars = static_cast<double>(lp.lengthSamples()) / metronome_.samplesPerBar();

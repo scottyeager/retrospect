@@ -242,14 +242,22 @@ int main(int argc, char* argv[]) {
     int numInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
     if (numInputChannels < 1) numInputChannels = 1;
 
+    int outputLatency = device->getOutputLatencyInSamples();
+    int inputLatency = device->getInputLatencyInSamples();
+    int roundTripLatency = outputLatency + inputLatency;
+
     fprintf(stderr, "Using audio device: %s\n", device->getName().toRawUTF8());
     fprintf(stderr, "  Sample rate: %.0f Hz\n", sampleRate);
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
     fprintf(stderr, "  Input channels: %d\n", numInputChannels);
+    fprintf(stderr, "  Latency: %d in + %d out = %d samples (%.1f ms)\n",
+            inputLatency, outputLatency, roundTripLatency,
+            1000.0 * roundTripLatency / sampleRate);
 
     // Create engine with per-channel ring buffers and live detection
     retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
                                   numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
+    engine.setLatencyCompensation(static_cast<int64_t>(roundTripLatency));
 
     // Apply config values to engine
     engine.metronome().setBpm(cfg.bpm);
@@ -375,8 +383,10 @@ int main(int argc, char* argv[]) {
     tui.addMessage("Retrospect started - JUCE audio active");
     tui.addMessage("Device: " + device->getName().toStdString());
     {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d", sampleRate, bufferSize);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d  Latency: %d samples (%.1fms)",
+                 sampleRate, bufferSize, roundTripLatency,
+                 1000.0 * roundTripLatency / sampleRate);
         tui.addMessage(buf);
     }
     tui.addMessage("OSC server on port " + cfg.oscPort);

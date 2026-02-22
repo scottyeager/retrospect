@@ -171,6 +171,12 @@ public:
 
     double sampleRate() const { return sampleRate_; }
 
+    /// Latency compensation in samples (round-trip: output + input).
+    /// When set, capture and recording operations offset their read positions
+    /// to align recorded audio with the metronome's internal timeline.
+    int64_t latencyCompensation() const { return latencyCompensation_; }
+    void setLatencyCompensation(int64_t samples) { latencyCompensation_ = std::max(int64_t(0), samples); }
+
     /// Monitoring: pass-through input to output
     bool inputMonitoring() const { return inputMonitoring_; }
     void setInputMonitoring(bool on) { inputMonitoring_ = on; }
@@ -248,6 +254,7 @@ private:
     int maxLookbackBars_;
     int crossfadeSamples_ = 256;
     double sampleRate_;
+    int64_t latencyCompensation_ = 0;
     bool inputMonitoring_ = false;
     float liveThreshold_ = 0.0f;
 
