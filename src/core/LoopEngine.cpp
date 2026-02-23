@@ -52,6 +52,7 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
         inputChannels_.emplace_back(ringCapacity, activityWindowSamples);
     }
     channelPeaksSnapshot_.resize(static_cast<size_t>(numInputChannels), 0.0f);
+    lastThresholdBreachSample_.resize(static_cast<size_t>(numInputChannels), INT64_MIN);
 
     for (int i = 0; i < maxLoops; ++i) {
         loops_[static_cast<size_t>(i)].setId(i);
@@ -132,12 +133,14 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
         midiSync_.advance(1);
     }
 
-    // Update live channel bitmask (lock-free, always updated)
+    // Update live channel bitmask and threshold breach timestamps
     {
+        int64_t currentSample = metronome_.position().totalSamples;
         uint64_t mask = 0;
         for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
             if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
                 mask |= (uint64_t(1) << ch);
+                lastThresholdBreachSample_[static_cast<size_t>(ch)] = currentSample;
             }
         }
         liveChannelMask_.store(mask, std::memory_order_relaxed);
@@ -285,31 +288,27 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     int captureLen = static_cast<int>(lookback);
 
     // Capture from each input channel and mix down to mono.
-    // A channel is included if ANY sample in the captured segment exceeds the
-    // live threshold (or if threshold is disabled). This ensures the entire
-    // segment is captured when a channel had activity at any point during the
-    // lookback period, rather than only checking the current activity window.
+    // A channel is included if it exceeded the live threshold at any point
+    // during the capture window (checked via lastThresholdBreachSample_,
+    // an O(1) lookup updated each processBlock). This avoids scanning the
+    // entire captured segment and ensures the full channel audio is included
+    // whenever the channel had activity during the lookback period.
     // Apply latency compensation: read from further back in the ring buffer
     // to align captured audio with the metronome's internal timeline.
     int64_t samplesAgo = static_cast<int64_t>(captureLen) + latencyCompensation_;
+    int64_t currentSample = metronome_.position().totalSamples;
+    int64_t captureStartSample = currentSample - samplesAgo;
     std::vector<float> audio(static_cast<size_t>(captureLen), 0.0f);
     int liveCount = 0;
-    for (auto& ch : inputChannels_) {
-        std::vector<float> chAudio(static_cast<size_t>(captureLen), 0.0f);
-        ch.ringBuffer().readFromPast(chAudio.data(), captureLen, samplesAgo);
-
-        // Check if this channel had any activity in the captured segment
-        bool hadActivity = (liveThreshold_ <= 0.0f);
-        if (!hadActivity) {
-            for (size_t j = 0; j < chAudio.size(); ++j) {
-                if (std::abs(chAudio[j]) > liveThreshold_) {
-                    hadActivity = true;
-                    break;
-                }
-            }
-        }
+    int engineChannels = static_cast<int>(inputChannels_.size());
+    for (int chIdx = 0; chIdx < engineChannels; ++chIdx) {
+        bool hadActivity = (liveThreshold_ <= 0.0f) ||
+            (lastThresholdBreachSample_[static_cast<size_t>(chIdx)] >= captureStartSample);
 
         if (hadActivity) {
+            std::vector<float> chAudio(static_cast<size_t>(captureLen), 0.0f);
+            inputChannels_[static_cast<size_t>(chIdx)].ringBuffer()
+                .readFromPast(chAudio.data(), captureLen, samplesAgo);
             for (size_t j = 0; j < audio.size(); ++j) {
                 audio[j] += chAudio[j];
             }

@@ -245,6 +245,10 @@ private:
     MetronomeClick click_;
     MidiSync midiSync_;
     std::vector<InputChannel> inputChannels_;
+    /// Per-channel: metronome sample when the threshold was last exceeded.
+    /// Updated once per processBlock. Used by fulfillCapture to decide
+    /// channel inclusion in O(1) instead of scanning the captured segment.
+    std::vector<int64_t> lastThresholdBreachSample_;
     std::vector<Loop> loops_;
 
     std::optional<ActiveRecording> activeRecording_;

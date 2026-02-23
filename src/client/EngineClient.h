@@ -55,12 +55,6 @@ struct InputChannelSnapshot {
     bool live = false;
 };
 
-/// Snapshot of a single input channel for display
-struct InputChannelSnapshot {
-    float peakLevel = 0.0f;
-    bool live = false;
-};
-
 /// Complete engine state snapshot, updated once per TUI frame
 struct EngineSnapshot {
     MetronomeSnapshot metronome;
