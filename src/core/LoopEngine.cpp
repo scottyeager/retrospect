@@ -365,6 +365,14 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     lp.loadFromCapture(std::move(audio));
     lp.setCrossfadeSamples(crossfadeSamples_);
 
+    // Align playback position with the metronome. Because execution was
+    // delayed by latencyCompensation_ samples, the metronome is already
+    // that many samples into the current bar. Start the loop at the
+    // matching position so it stays in sync.
+    if (latencyCompensation_ > 0) {
+        lp.setPlayPosition(latencyCompensation_);
+    }
+
     double bars = static_cast<double>(lookback) / metronome_.samplesPerBar();
     lp.setLengthInBars(bars);
 
@@ -463,6 +471,11 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
     // Load the mixed audio into the loop
     lp.loadFromCapture(std::move(mixed));
     lp.setCrossfadeSamples(crossfadeSamples_);
+
+    // Align playback position with the metronome (same reasoning as capture)
+    if (latencyCompensation_ > 0) {
+        lp.setPlayPosition(latencyCompensation_);
+    }
 
     double bars = static_cast<double>(lp.lengthSamples()) / metronome_.samplesPerBar();
     lp.setLengthInBars(bars);

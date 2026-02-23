@@ -157,6 +157,8 @@ public:
     // Properties
     int64_t lengthSamples() const { return loopLength_; }
     int64_t playPosition() const;
+    /// Set the playback position (used for latency compensation alignment)
+    void setPlayPosition(int64_t pos);
     bool isReversed() const { return reversed_; }
     double speed() const { return speed_; }
     int layerCount() const { return static_cast<int>(layers_.size()); }

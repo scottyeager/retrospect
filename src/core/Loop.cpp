@@ -277,6 +277,13 @@ int64_t Loop::playPosition() const {
     return playPos_;
 }
 
+void Loop::setPlayPosition(int64_t pos) {
+    if (loopLength_ <= 0) return;
+    playPos_ = pos % loopLength_;
+    stretchRawPos_ = playPos_;
+    fractionalPos_ = 0.0;
+}
+
 void Loop::clear() {
     layers_.clear();
     state_ = LoopState::Empty;
