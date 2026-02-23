@@ -21,10 +21,6 @@ struct Config {
     float liveThreshold = 0.0f;          // 0 = disabled (all channels pass)
     int liveWindowMs = 500;              // Activity detection window in ms
 
-    // [input]
-    float liveThreshold = 0.0f;          // 0 = disabled (all channels pass)
-    int liveWindowMs = 500;              // Activity detection window in ms
-
     // [metronome]
     double bpm = 120.0;
     int beatsPerBar = 4;

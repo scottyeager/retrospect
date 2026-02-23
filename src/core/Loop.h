@@ -133,6 +133,10 @@ public:
     /// The sample is mixed (added) to the new layer.
     void recordSample(float input);
 
+    /// Access the audio buffer of the current recording layer (last layer).
+    /// Used by LoopEngine to write mixed overdub audio at stop time.
+    std::vector<float>& recordLayerAudio() { return layers_.back().audio; }
+
     // State
     LoopState state() const { return state_; }
     bool isEmpty() const { return state_ == LoopState::Empty; }

@@ -45,10 +45,11 @@ struct EngineCallbacks {
     std::function<void(const MetronomePosition&)> onBar;
 };
 
-/// An in-progress classic recording (accumulating input in real time)
+/// An in-progress classic recording (accumulating per-channel input)
 struct ActiveRecording {
     int loopIndex = -1;
-    std::vector<float> buffer;
+    std::vector<std::vector<float>> channelBuffers; // per input channel
+    uint64_t activeChannelMask = 0;                 // sticky: set when channel breaches threshold
     int64_t startSample = 0;
 };
 
@@ -252,6 +253,11 @@ private:
     std::vector<Loop> loops_;
 
     std::optional<ActiveRecording> activeRecording_;
+
+    /// Per-channel overdub accumulation (scoped per overdub layer)
+    std::vector<std::vector<float>> overdubChannelBuffers_;
+    uint64_t overdubActiveChannelMask_ = 0;
+    int overdubLoopIndex_ = -1;
 
     Quantize defaultQuantize_ = Quantize::Bar;
     int lookbackBars_ = 1;

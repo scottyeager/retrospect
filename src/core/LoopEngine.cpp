@@ -79,20 +79,28 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
 
     for (int i = 0; i < numSamples; ++i) {
         // Write each input channel to its InputChannel and compute
-        // the mono mix of live channels.
-        float liveMix = 0.0f;
+        // an unfiltered input mix (all channels, no threshold).
+        float inputMix = 0.0f;
         for (int ch = 0; ch < engineChannels; ++ch) {
             float sample = (ch < inputChannelCount && input && input[ch])
                 ? input[ch][i] : 0.0f;
             inputChannels_[static_cast<size_t>(ch)].writeSample(sample);
-            if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
-                liveMix += sample;
-            }
+            inputMix += sample;
         }
 
-        // Accumulate into active classic recording if one is in progress
+        // Accumulate per-channel audio into active classic recording
         if (activeRecording_) {
-            activeRecording_->buffer.push_back(liveMix);
+            for (int ch = 0; ch < engineChannels; ++ch) {
+                float sample = (ch < inputChannelCount && input && input[ch])
+                    ? input[ch][i] : 0.0f;
+                activeRecording_->channelBuffers[static_cast<size_t>(ch)].push_back(sample);
+            }
+            // Sticky mask: once a channel breaches threshold, include it
+            for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+                if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
+                    activeRecording_->activeChannelMask |= (uint64_t(1) << ch);
+                }
+            }
         }
 
         // Check each loop's pending state
@@ -109,9 +117,22 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
             if (!lp.isEmpty()) {
                 outSample += lp.processSample();
 
-                // Feed live input mix to overdub-recording loops
-                if (lp.isRecording()) {
-                    lp.recordSample(liveMix);
+                // Accumulate per-channel overdub audio
+                if (lp.isRecording() && lp.id() == overdubLoopIndex_) {
+                    int64_t pos = lp.playPosition();
+                    if (pos >= 0 && pos < lp.lengthSamples()) {
+                        for (int ch = 0; ch < engineChannels; ++ch) {
+                            float sample = (ch < inputChannelCount && input && input[ch])
+                                ? input[ch][i] : 0.0f;
+                            overdubChannelBuffers_[static_cast<size_t>(ch)][static_cast<size_t>(pos)] += sample;
+                        }
+                        // Sticky per-layer mask
+                        for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+                            if (inputChannels_[static_cast<size_t>(ch)].isLive(liveThreshold_)) {
+                                overdubActiveChannelMask_ |= (uint64_t(1) << ch);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -119,9 +140,9 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
         // Mix metronome click
         outSample += click_.nextSample();
 
-        // Input monitoring (pass through the live mix)
+        // Input monitoring (pass through all input channels)
         if (inputMonitoring_) {
-            outSample += liveMix;
+            outSample += inputMix;
         }
 
         if (output) {
@@ -218,8 +239,33 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
         ps.overdub.reset();
         if (overdubOp == PendingState::OverdubOp::Start) {
             lp.startOverdub();
+            // Initialize per-channel overdub buffers
+            int numCh = static_cast<int>(inputChannels_.size());
+            overdubChannelBuffers_.resize(static_cast<size_t>(numCh));
+            for (auto& buf : overdubChannelBuffers_) {
+                buf.assign(static_cast<size_t>(lp.lengthSamples()), 0.0f);
+            }
+            overdubActiveChannelMask_ = 0;
+            overdubLoopIndex_ = lp.id();
             lastMessage_ = "Loop " + std::to_string(lp.id()) + " overdub started";
         } else {
+            // Mix down active channels into the overdub layer
+            if (lp.id() == overdubLoopIndex_ && !overdubChannelBuffers_.empty()) {
+                auto& layerAudio = lp.recordLayerAudio();
+                for (size_t ch = 0; ch < overdubChannelBuffers_.size(); ++ch) {
+                    if (liveThreshold_ <= 0.0f ||
+                        (overdubActiveChannelMask_ & (uint64_t(1) << ch))) {
+                        for (size_t j = 0; j < layerAudio.size() &&
+                             j < overdubChannelBuffers_[ch].size(); ++j) {
+                            layerAudio[j] += overdubChannelBuffers_[ch][j];
+                        }
+                    }
+                }
+            }
+            // Reset per-layer overdub state
+            overdubChannelBuffers_.clear();
+            overdubActiveChannelMask_ = 0;
+            overdubLoopIndex_ = -1;
             lp.stopOverdub();
             lastMessage_ = "Loop " + std::to_string(lp.id()) + " overdub stopped";
         }
@@ -353,10 +399,12 @@ void LoopEngine::fulfillRecord(Loop& lp) {
     // Clear the target loop if it has content
     lp.clear();
 
-    // Start accumulating input
+    // Start accumulating per-channel input
     ActiveRecording rec;
     rec.loopIndex = idx;
     rec.startSample = metronome_.position().totalSamples;
+    int numCh = static_cast<int>(inputChannels_.size());
+    rec.channelBuffers.resize(static_cast<size_t>(numCh));
     activeRecording_ = std::move(rec);
 
     isRecordingAtomic_.store(true, std::memory_order_relaxed);
@@ -383,16 +431,20 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
         return;
     }
 
-    // Apply latency compensation: the first latencyCompensation_ samples in the
-    // buffer are audio from before the intended recording start (they were still
-    // in the hardware pipeline when recording began). Trim them so the loop
-    // content aligns with the metronome.
-    auto& buf = activeRecording_->buffer;
-    if (latencyCompensation_ > 0 && static_cast<int64_t>(buf.size()) > latencyCompensation_) {
-        buf.erase(buf.begin(), buf.begin() + latencyCompensation_);
-    }
+    // Mix down per-channel buffers, including only channels that breached
+    // the threshold at any point during the recording (sticky inclusion).
+    auto& rec = *activeRecording_;
+    size_t len = rec.channelBuffers.empty() ? 0 : rec.channelBuffers[0].size();
 
-    if (buf.empty()) {
+    // Apply latency compensation: trim the first latencyCompensation_ samples
+    // from each channel (audio from before the intended recording start).
+    size_t trimFront = 0;
+    if (latencyCompensation_ > 0 && static_cast<int64_t>(len) > latencyCompensation_) {
+        trimFront = static_cast<size_t>(latencyCompensation_);
+    }
+    size_t mixLen = len - trimFront;
+
+    if (mixLen == 0) {
         lastMessage_ = "No audio recorded";
         activeRecording_.reset();
         isRecordingAtomic_.store(false, std::memory_order_relaxed);
@@ -401,8 +453,29 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
         return;
     }
 
-    // Load the recorded audio into the loop
-    lp.loadFromCapture(std::move(buf));
+    std::vector<float> mixed(mixLen, 0.0f);
+    int liveCount = 0;
+    for (size_t ch = 0; ch < rec.channelBuffers.size(); ++ch) {
+        if (liveThreshold_ <= 0.0f ||
+            (rec.activeChannelMask & (uint64_t(1) << ch))) {
+            for (size_t j = 0; j < mixLen; ++j) {
+                mixed[j] += rec.channelBuffers[ch][trimFront + j];
+            }
+            ++liveCount;
+        }
+    }
+
+    if (liveCount == 0) {
+        lastMessage_ = "No active channels recorded";
+        activeRecording_.reset();
+        isRecordingAtomic_.store(false, std::memory_order_relaxed);
+        recordingLoopIdxAtomic_.store(-1, std::memory_order_relaxed);
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        return;
+    }
+
+    // Load the mixed audio into the loop
+    lp.loadFromCapture(std::move(mixed));
     lp.setCrossfadeSamples(crossfadeSamples_);
 
     double bars = static_cast<double>(lp.lengthSamples()) / metronome_.samplesPerBar();
@@ -418,7 +491,8 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
 
     std::ostringstream msg;
     msg << "Loop " << idx << " recorded ("
-        << std::fixed << std::setprecision(1) << bars << " bars)";
+        << std::fixed << std::setprecision(1) << bars << " bars, "
+        << liveCount << " ch)";
     lastMessage_ = msg.str();
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
     if (callbacks_.onStateChanged) callbacks_.onStateChanged();
