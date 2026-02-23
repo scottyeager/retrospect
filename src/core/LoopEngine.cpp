@@ -336,14 +336,9 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     // Capture from each input channel and mix down to mono.
     // A channel is included if it exceeded the live threshold at any point
     // during the capture window (checked via lastThresholdBreachSample_,
-    // an O(1) lookup updated each processBlock). This avoids scanning the
-    // entire captured segment and ensures the full channel audio is included
-    // whenever the channel had activity during the lookback period.
-    // Apply latency compensation: read from further back in the ring buffer
-    // to align captured audio with the metronome's internal timeline.
-    int64_t samplesAgo = static_cast<int64_t>(captureLen) + latencyCompensation_;
+    // an O(1) lookup updated each processBlock).
     int64_t currentSample = metronome_.position().totalSamples;
-    int64_t captureStartSample = currentSample - samplesAgo;
+    int64_t captureStartSample = currentSample - static_cast<int64_t>(captureLen);
     std::vector<float> audio(static_cast<size_t>(captureLen), 0.0f);
     int liveCount = 0;
     int engineChannels = static_cast<int>(inputChannels_.size());
@@ -352,9 +347,8 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
             (lastThresholdBreachSample_[static_cast<size_t>(chIdx)] >= captureStartSample);
 
         if (hadActivity) {
-            std::vector<float> chAudio(static_cast<size_t>(captureLen), 0.0f);
-            inputChannels_[static_cast<size_t>(chIdx)].ringBuffer()
-                .readFromPast(chAudio.data(), captureLen, samplesAgo);
+            auto chAudio = inputChannels_[static_cast<size_t>(chIdx)].ringBuffer()
+                .capture(captureLen);
             for (size_t j = 0; j < audio.size(); ++j) {
                 audio[j] += chAudio[j];
             }
@@ -436,15 +430,7 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
     auto& rec = *activeRecording_;
     size_t len = rec.channelBuffers.empty() ? 0 : rec.channelBuffers[0].size();
 
-    // Apply latency compensation: trim the first latencyCompensation_ samples
-    // from each channel (audio from before the intended recording start).
-    size_t trimFront = 0;
-    if (latencyCompensation_ > 0 && static_cast<int64_t>(len) > latencyCompensation_) {
-        trimFront = static_cast<size_t>(latencyCompensation_);
-    }
-    size_t mixLen = len - trimFront;
-
-    if (mixLen == 0) {
+    if (len == 0) {
         lastMessage_ = "No audio recorded";
         activeRecording_.reset();
         isRecordingAtomic_.store(false, std::memory_order_relaxed);
@@ -453,13 +439,13 @@ void LoopEngine::fulfillStopRecord(Loop& lp) {
         return;
     }
 
-    std::vector<float> mixed(mixLen, 0.0f);
+    std::vector<float> mixed(len, 0.0f);
     int liveCount = 0;
     for (size_t ch = 0; ch < rec.channelBuffers.size(); ++ch) {
         if (liveThreshold_ <= 0.0f ||
             (rec.activeChannelMask & (uint64_t(1) << ch))) {
-            for (size_t j = 0; j < mixLen; ++j) {
-                mixed[j] += rec.channelBuffers[ch][trimFront + j];
+            for (size_t j = 0; j < len; ++j) {
+                mixed[j] += rec.channelBuffers[ch][j];
             }
             ++liveCount;
         }
@@ -724,7 +710,9 @@ void LoopEngine::drainCommands() {
                 Loop& lp = loops_[static_cast<size_t>(idx)];
                 auto& ps = lp.pendingState();
                 PendingCapture cap;
-                cap.executeSample = computeExecuteSample(cmd.quantize);
+                // Delay execution by the round-trip latency so the audio
+                // for the target boundary has arrived in the ring buffer.
+                cap.executeSample = computeExecuteSample(cmd.quantize) + latencyCompensation_;
                 cap.quantize = cmd.quantize;
                 cap.lookbackSamples = static_cast<int64_t>(
                     std::round(static_cast<double>(cmd.lookbackBars) *
@@ -737,7 +725,9 @@ void LoopEngine::drainCommands() {
                 if (idx < 0 || idx >= maxLoops()) break;
                 Loop& lp = loops_[static_cast<size_t>(idx)];
                 auto& ps = lp.pendingState();
-                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize), cmd.quantize};
+                // Delay record start so audio arriving at the boundary has
+                // passed through the hardware pipeline before we begin.
+                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize) + latencyCompensation_, cmd.quantize};
                 ps.recordOp = PendingState::RecordOp::Start;
                 break;
             }
@@ -746,7 +736,9 @@ void LoopEngine::drainCommands() {
                 if (idx < 0 || idx >= maxLoops()) break;
                 Loop& lp = loops_[static_cast<size_t>(idx)];
                 auto& ps = lp.pendingState();
-                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize), cmd.quantize};
+                // Delay stop so the final boundary audio arrives before
+                // we finalize the recording.
+                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize) + latencyCompensation_, cmd.quantize};
                 ps.recordOp = PendingState::RecordOp::Stop;
                 break;
             }
