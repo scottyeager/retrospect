@@ -179,6 +179,9 @@ void LocalEngineClient::poll() {
     snap_.midiSyncEnabled = engine_.midiSyncEnabled();
     snap_.midiOutputAvailable = engine_.midiSync().hasOutput();
     snap_.liveThreshold = engine_.liveThreshold();
+    snap_.numOutputChannels = engine_.numOutputChannels();
+    snap_.outputModeStr = (engine_.outputMode() == OutputMode::Stereo)
+        ? "stereo" : "multichannel";
 
     // Drain buffered messages
     {

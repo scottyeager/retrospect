@@ -17,6 +17,25 @@
 
 namespace retrospect {
 
+/// Output routing mode for multi-channel audio devices
+enum class OutputMode {
+    Stereo,       // All audio mixed to a stereo pair
+    Multichannel  // Input channels map to corresponding output channels
+};
+
+/// Output routing configuration (set at startup, read-only from audio thread)
+struct OutputRouting {
+    OutputMode mode = OutputMode::Stereo;
+    std::vector<int> mainOutputs = {0, 1};     // 0-indexed output channel indices
+    std::vector<int> metronomeOutputs;         // 0-indexed; empty = same as main
+};
+
+/// Pre-computed per-output-channel flags for the audio path
+struct OutputChannelConfig {
+    bool mainMix = false;      // Receives loop playback (+ input monitoring in stereo mode)
+    bool metronomeMix = false; // Receives metronome click
+};
+
 /// Types of operations that can be quantized
 enum class OpType {
     CaptureLoop,     // Capture from ring buffer and start playing
@@ -96,11 +115,12 @@ public:
 
     /// Process a block of multi-channel audio.
     /// @param input Array of per-channel input buffers (may be nullptr for missing channels)
-    /// @param numInputChannels Number of input channel pointers
-    /// @param output Output audio buffer (mono, will be summed into)
+    /// @param inputChannelCount Number of input channel pointers
+    /// @param output Array of per-channel output buffers
+    /// @param numOutputChannels Number of output channel pointers
     /// @param numSamples Number of samples in this block
     void processBlock(const float* const* input, int inputChannelCount,
-                      float* output, int numSamples);
+                      float* const* output, int numOutputChannels, int numSamples);
 
     /// Schedule a quantized operation. The operation will be executed
     /// at the next quantization boundary (beat or bar).
@@ -177,6 +197,16 @@ public:
     /// to align recorded audio with the metronome's internal timeline.
     int64_t latencyCompensation() const { return latencyCompensation_; }
     void setLatencyCompensation(int64_t samples) { latencyCompensation_ = std::max(int64_t(0), samples); }
+
+    /// Configure output channel routing. Must be called before audio starts.
+    /// Pre-computes per-channel flags for the audio path.
+    void setOutputRouting(const OutputRouting& routing, int numOutputChannels);
+
+    /// Current output routing mode
+    OutputMode outputMode() const { return outputMode_; }
+
+    /// Number of output channels configured
+    int numOutputChannels() const { return static_cast<int>(outputChannelConfigs_.size()); }
 
     /// Monitoring: pass-through input to output
     bool inputMonitoring() const { return inputMonitoring_; }
@@ -267,6 +297,9 @@ private:
     int64_t latencyCompensation_ = 0;
     bool inputMonitoring_ = false;
     float liveThreshold_ = 0.0f;
+
+    OutputMode outputMode_ = OutputMode::Stereo;
+    std::vector<OutputChannelConfig> outputChannelConfigs_;
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;

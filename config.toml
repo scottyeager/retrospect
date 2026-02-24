@@ -6,6 +6,20 @@
 # Audio backend: "" (auto), "jack", or "alsa"
 # backend = ""
 
+# Output mode: "stereo" or "multichannel"
+# stereo: all audio mixed to a stereo pair on main_outputs
+# multichannel: input channels routed to corresponding output channels,
+#   with loop playback on main_outputs
+# output_mode = "stereo"
+
+# Output channels for the main stereo mix (1-based channel numbers)
+# main_outputs = [1, 2]
+
+# Output channels for the metronome click (1-based channel numbers)
+# Omit or leave empty to include metronome in the main mix.
+# Example: route metronome to headphones on channels 3/4:
+# metronome_outputs = [3, 4]
+
 [engine]
 # Number of loop slots (1-64)
 # max_loops = 8

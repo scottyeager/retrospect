@@ -75,6 +75,9 @@ struct EngineSnapshot {
     int maxLoops = 8;
     int activeLoopCount = 0;
 
+    int numOutputChannels = 1;
+    std::string outputModeStr;  // "stereo" or "multichannel"
+
     /// Messages received since last poll
     std::vector<std::string> messages;
 };

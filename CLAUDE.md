@@ -143,6 +143,16 @@ Config file at `~/.config/retrospect/config.toml` (or `$XDG_CONFIG_HOME/retrospe
 
 Sections: `[audio]`, `[engine]`, `[input]`, `[metronome]`, `[midi]`, `[osc]`, `[tui]`.
 
+### Output Routing (`[audio]`)
+
+For ALSA backends with multi-channel interfaces, output routing controls where audio goes:
+
+- `output_mode`: `"stereo"` (default) mixes all loops to a stereo pair; `"multichannel"` maps input channels to corresponding output channels with loop playback on the main pair.
+- `main_outputs`: 1-based channel indices for the main mix (default: `[1, 2]`).
+- `metronome_outputs`: 1-based channel indices for the metronome click. Omit to include in the main mix. Example: `[3, 4]` sends click to headphones.
+
+JACK ignores these settings — it creates virtual ports that are patched externally, using mono output on a single port (old behavior).
+
 CLI flags: `--headless` (OSC server only), `--connect HOST:PORT` (remote TUI), `--list-midi`.
 
 ## OSC Interface
@@ -165,11 +175,12 @@ State push (server→client): `/retro/state/metronome`, `/retro/state/loop`, `/r
 ## Key Enums
 
 ```cpp
-enum class LoopState { Empty, Playing, Muted, Recording };
-enum class Quantize  { Free, Beat, Bar };
-enum class OpType    { CaptureLoop, Record, StopRecord, Mute, Unmute, ToggleMute,
-                       Reverse, StartOverdub, StopOverdub, UndoLayer, RedoLayer,
-                       SetSpeed, ClearLoop };
+enum class LoopState  { Empty, Playing, Muted, Recording };
+enum class Quantize   { Free, Beat, Bar };
+enum class OutputMode { Stereo, Multichannel };
+enum class OpType     { CaptureLoop, Record, StopRecord, Mute, Unmute, ToggleMute,
+                        Reverse, StartOverdub, StopOverdub, UndoLayer, RedoLayer,
+                        SetSpeed, ClearLoop };
 ```
 
 ## Adding New Source Files

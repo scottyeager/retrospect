@@ -70,12 +70,35 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
     });
 }
 
+void LoopEngine::setOutputRouting(const OutputRouting& routing, int numOutputChannels) {
+    outputMode_ = routing.mode;
+    outputChannelConfigs_.clear();
+    outputChannelConfigs_.resize(static_cast<size_t>(numOutputChannels));
+
+    for (int ch : routing.mainOutputs) {
+        if (ch >= 0 && ch < numOutputChannels) {
+            outputChannelConfigs_[static_cast<size_t>(ch)].mainMix = true;
+        }
+    }
+
+    // Metronome: use dedicated channels if specified, otherwise same as main
+    const auto& metChs = routing.metronomeOutputs.empty()
+        ? routing.mainOutputs : routing.metronomeOutputs;
+    for (int ch : metChs) {
+        if (ch >= 0 && ch < numOutputChannels) {
+            outputChannelConfigs_[static_cast<size_t>(ch)].metronomeMix = true;
+        }
+    }
+}
+
 void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
-                              float* output, int numSamples) {
+                              float* const* output, int numOutputChannels,
+                              int numSamples) {
     // Drain commands from TUI thread at the start of each block
     drainCommands();
 
     int engineChannels = static_cast<int>(inputChannels_.size());
+    int numOutConfigs = static_cast<int>(outputChannelConfigs_.size());
 
     for (int i = 0; i < numSamples; ++i) {
         // Write each input channel to its InputChannel and compute
@@ -112,10 +135,10 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
         }
 
         // Mix output from all playing loops
-        float outSample = 0.0f;
+        float loopMix = 0.0f;
         for (auto& lp : loops_) {
             if (!lp.isEmpty()) {
-                outSample += lp.processSample();
+                loopMix += lp.processSample();
 
                 // Accumulate per-channel overdub audio
                 if (lp.isRecording() && lp.id() == overdubLoopIndex_) {
@@ -137,16 +160,45 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
             }
         }
 
-        // Mix metronome click
-        outSample += click_.nextSample();
+        // Compute metronome click sample
+        float clickSample = click_.nextSample();
 
-        // Input monitoring (pass through all input channels)
-        if (inputMonitoring_) {
-            outSample += inputMix;
-        }
-
+        // Write to output channels based on routing configuration
         if (output) {
-            output[i] = outSample;
+            for (int outCh = 0; outCh < numOutputChannels; ++outCh) {
+                if (!output[outCh]) continue;
+
+                float val = 0.0f;
+
+                if (outCh < numOutConfigs) {
+                    const auto& ocfg = outputChannelConfigs_[static_cast<size_t>(outCh)];
+
+                    if (ocfg.mainMix) {
+                        val += loopMix;
+                        if (inputMonitoring_) {
+                            if (outputMode_ == OutputMode::Multichannel) {
+                                // Route corresponding input channel
+                                if (outCh < inputChannelCount && input[outCh]) {
+                                    val += input[outCh][i];
+                                }
+                            } else {
+                                val += inputMix;
+                            }
+                        }
+                    } else if (outputMode_ == OutputMode::Multichannel && inputMonitoring_) {
+                        // Non-main outputs in multichannel mode: direct input monitoring
+                        if (outCh < inputChannelCount && input && input[outCh]) {
+                            val += input[outCh][i];
+                        }
+                    }
+
+                    if (ocfg.metronomeMix) {
+                        val += clickSample;
+                    }
+                }
+
+                output[outCh][i] = val;
+            }
         }
 
         // Advance metronome and MIDI sync by 1 sample

@@ -1,12 +1,16 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace retrospect {
 
 struct Config {
     // [audio]
     std::string audioBackend;             // "" = auto, "jack", "alsa"
+    std::string outputMode = "stereo";    // "stereo" or "multichannel"
+    std::vector<int> mainOutputs;         // 1-based channel indices (empty = {1,2})
+    std::vector<int> metronomeOutputs;    // 1-based channel indices (empty = same as main)
 
     // [engine]
     int maxLoops = 8;

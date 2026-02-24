@@ -10,6 +10,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <csignal>
@@ -36,20 +37,10 @@ public:
             int numSamples,
             const juce::AudioIODeviceCallbackContext&) override {
 
-        // Pass all input channels to the engine for per-channel ring
-        // buffering and live-activity detection.
-        float* output = (numOutputChannels > 0 && outputChannelData[0])
-            ? outputChannelData[0] : nullptr;
-
-        engine_.processBlock(inputChannelData, numInputChannels, output, numSamples);
-
-        // Clear any remaining output channels
-        for (int ch = 1; ch < numOutputChannels; ++ch) {
-            if (outputChannelData[ch]) {
-                std::memset(outputChannelData[ch], 0,
-                            sizeof(float) * static_cast<size_t>(numSamples));
-            }
-        }
+        // Pass all input and output channels to the engine.
+        // The engine writes to output channels based on its routing config.
+        engine_.processBlock(inputChannelData, numInputChannels,
+                             outputChannelData, numOutputChannels, numSamples);
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
@@ -224,8 +215,42 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Request up to 64 input channels; the device will provide what it supports
-    auto error = deviceManager.initialise(64, 1, nullptr, true);
+    // Build output routing from config (1-based config → 0-based internal).
+    // This is only used for non-JACK backends (ALSA etc.) where the device
+    // has a fixed number of hardware channels.  JACK creates virtual ports
+    // that are patched externally, so it keeps the old mono-output behavior.
+    retrospect::OutputRouting outputRouting;
+    outputRouting.mode = (cfg.outputMode == "multichannel")
+        ? retrospect::OutputMode::Multichannel
+        : retrospect::OutputMode::Stereo;
+
+    if (cfg.mainOutputs.empty()) {
+        outputRouting.mainOutputs = {0, 1};
+    } else {
+        outputRouting.mainOutputs.clear();
+        for (int ch : cfg.mainOutputs) {
+            outputRouting.mainOutputs.push_back(ch - 1); // 1-based → 0-based
+        }
+    }
+
+    if (!cfg.metronomeOutputs.empty()) {
+        outputRouting.metronomeOutputs.clear();
+        for (int ch : cfg.metronomeOutputs) {
+            outputRouting.metronomeOutputs.push_back(ch - 1);
+        }
+    }
+
+    // Compute how many output channels we need from the routing config
+    int requestedOutputChannels = 2;
+    for (int ch : outputRouting.mainOutputs) {
+        requestedOutputChannels = std::max(requestedOutputChannels, ch + 1);
+    }
+    for (int ch : outputRouting.metronomeOutputs) {
+        requestedOutputChannels = std::max(requestedOutputChannels, ch + 1);
+    }
+
+    // Request up to 64 input channels and the required output channels
+    auto error = deviceManager.initialise(64, requestedOutputChannels, nullptr, true);
     if (error.isNotEmpty()) {
         fprintf(stderr, "Audio device error: %s\n", error.toRawUTF8());
         return 1;
@@ -237,10 +262,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Detect JACK backend — JACK handles routing externally via port
+    // connections, so we keep the old behavior: mono sum on first output.
+    bool isJackBackend = device->getTypeName().containsIgnoreCase("jack");
+    if (isJackBackend) {
+        outputRouting.mode = retrospect::OutputMode::Stereo;
+        outputRouting.mainOutputs = {0};
+        outputRouting.metronomeOutputs = {};
+    }
+
     double sampleRate = device->getCurrentSampleRate();
     int bufferSize = device->getCurrentBufferSizeSamples();
     int numInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
     if (numInputChannels < 1) numInputChannels = 1;
+    int numOutputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
+    if (numOutputChannels < 1) numOutputChannels = 1;
 
     int outputLatency = device->getOutputLatencyInSamples();
     int inputLatency = device->getInputLatencyInSamples();
@@ -250,13 +286,20 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  Sample rate: %.0f Hz\n", sampleRate);
     fprintf(stderr, "  Buffer size: %d samples\n", bufferSize);
     fprintf(stderr, "  Input channels: %d\n", numInputChannels);
+    fprintf(stderr, "  Output channels: %d\n", numOutputChannels);
     fprintf(stderr, "  Latency: %d in + %d out = %d samples (%.1f ms)\n",
             inputLatency, outputLatency, roundTripLatency,
             1000.0 * roundTripLatency / sampleRate);
 
+    if (!isJackBackend && numOutputChannels < requestedOutputChannels) {
+        fprintf(stderr, "  Warning: requested %d output channels but device provides %d\n",
+                requestedOutputChannels, numOutputChannels);
+    }
+
     // Create engine with per-channel ring buffers and live detection
     retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
                                   numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
+    engine.setOutputRouting(outputRouting, numOutputChannels);
     if (cfg.latencyCompensation) {
         engine.setLatencyCompensation(static_cast<int64_t>(roundTripLatency));
     }
@@ -302,23 +345,18 @@ int main(int argc, char* argv[]) {
 
     // JACK transport: act as timebase master when using the JACK backend
     std::unique_ptr<retrospect::JackTransport> jackTransport;
-    {
-        auto* currentDevice = deviceManager.getCurrentAudioDevice();
-        bool isJackBackend = currentDevice &&
-            currentDevice->getTypeName().containsIgnoreCase("jack");
-        if (isJackBackend) {
-            jackTransport = std::make_unique<retrospect::JackTransport>(sampleRate);
-            if (jackTransport->init()) {
-                jackTransport->setBpm(cfg.bpm);
-                jackTransport->setBeatsPerBar(cfg.beatsPerBar);
-                jackTransport->rewind();
-                jackTransport->start();
-                engine.setBpmChangedCallback([&jackTransport](double bpm) {
-                    if (jackTransport) jackTransport->setBpm(bpm);
-                });
-            } else {
-                jackTransport.reset();
-            }
+    if (isJackBackend) {
+        jackTransport = std::make_unique<retrospect::JackTransport>(sampleRate);
+        if (jackTransport->init()) {
+            jackTransport->setBpm(cfg.bpm);
+            jackTransport->setBeatsPerBar(cfg.beatsPerBar);
+            jackTransport->rewind();
+            jackTransport->start();
+            engine.setBpmChangedCallback([&jackTransport](double bpm) {
+                if (jackTransport) jackTransport->setBpm(bpm);
+            });
+        } else {
+            jackTransport.reset();
         }
     }
 
@@ -386,10 +424,29 @@ int main(int argc, char* argv[]) {
     tui.addMessage("Device: " + device->getName().toStdString());
     {
         char buf[128];
-        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d  Latency: %d samples (%.1fms)",
-                 sampleRate, bufferSize, roundTripLatency,
-                 1000.0 * roundTripLatency / sampleRate);
+        snprintf(buf, sizeof(buf), "SR: %.0fHz  Buffer: %d  In: %d  Out: %d  Latency: %d samples (%.1fms)",
+                 sampleRate, bufferSize, numInputChannels, numOutputChannels,
+                 roundTripLatency, 1000.0 * roundTripLatency / sampleRate);
         tui.addMessage(buf);
+    }
+    {
+        // Output routing summary
+        auto chList = [](const std::vector<int>& chs) {
+            std::string s;
+            for (size_t i = 0; i < chs.size(); ++i) {
+                if (i > 0) s += ",";
+                s += std::to_string(chs[i] + 1); // 0-based → 1-based for display
+            }
+            return s;
+        };
+        std::string routingMsg = "Output: ";
+        routingMsg += (outputRouting.mode == retrospect::OutputMode::Stereo)
+            ? "stereo" : "multichannel";
+        routingMsg += " mix on " + chList(outputRouting.mainOutputs);
+        if (!outputRouting.metronomeOutputs.empty()) {
+            routingMsg += "  click on " + chList(outputRouting.metronomeOutputs);
+        }
+        tui.addMessage(routingMsg);
     }
     tui.addMessage("OSC server on port " + cfg.oscPort);
     if (midiOutput) {

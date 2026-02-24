@@ -46,6 +46,39 @@ Config Config::load() {
             fprintf(stderr, "Warning: invalid audio.backend '%s', using auto\n", v->c_str());
         }
     }
+    if (auto v = tbl["audio"]["output_mode"].value<std::string>()) {
+        if (*v == "stereo" || *v == "multichannel") {
+            cfg.outputMode = *v;
+        } else {
+            fprintf(stderr, "Warning: invalid audio.output_mode '%s', using default 'stereo'\n", v->c_str());
+        }
+    }
+    if (auto arr = tbl["audio"]["main_outputs"].as_array()) {
+        cfg.mainOutputs.clear();
+        for (const auto& elem : *arr) {
+            if (auto v = elem.value<int64_t>()) {
+                if (*v >= 1 && *v <= 64) {
+                    cfg.mainOutputs.push_back(static_cast<int>(*v));
+                } else {
+                    fprintf(stderr, "Warning: invalid audio.main_outputs value %lld (must be 1-64)\n",
+                            static_cast<long long>(*v));
+                }
+            }
+        }
+    }
+    if (auto arr = tbl["audio"]["metronome_outputs"].as_array()) {
+        cfg.metronomeOutputs.clear();
+        for (const auto& elem : *arr) {
+            if (auto v = elem.value<int64_t>()) {
+                if (*v >= 1 && *v <= 64) {
+                    cfg.metronomeOutputs.push_back(static_cast<int>(*v));
+                } else {
+                    fprintf(stderr, "Warning: invalid audio.metronome_outputs value %lld (must be 1-64)\n",
+                            static_cast<long long>(*v));
+                }
+            }
+        }
+    }
 
     // [engine]
     if (auto v = tbl["engine"]["max_loops"].value<int64_t>()) {
@@ -98,24 +131,6 @@ Config Config::load() {
     }
     if (auto v = tbl["engine"]["latency_compensation"].value<bool>()) {
         cfg.latencyCompensation = *v;
-    }
-
-    // [input]
-    if (auto v = tbl["input"]["live_threshold"].value<double>()) {
-        if (*v >= 0.0 && *v <= 1.0) {
-            cfg.liveThreshold = static_cast<float>(*v);
-        } else {
-            fprintf(stderr, "Warning: invalid input.live_threshold %.4f, using default %.4f\n",
-                    *v, static_cast<double>(cfg.liveThreshold));
-        }
-    }
-    if (auto v = tbl["input"]["live_window_ms"].value<int64_t>()) {
-        if (*v >= 10 && *v <= 10000) {
-            cfg.liveWindowMs = static_cast<int>(*v);
-        } else {
-            fprintf(stderr, "Warning: invalid input.live_window_ms %lld, using default %d\n",
-                    static_cast<long long>(*v), cfg.liveWindowMs);
-        }
     }
 
     // [input]
