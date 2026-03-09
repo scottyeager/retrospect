@@ -26,6 +26,12 @@ public:
     void executeOpNow(OpType type, int loopIndex) override;
     void cancelPending() override;
 
+    // Loop selection
+    void selectLoop(int idx) override;
+    void deselectLoop(int idx) override;
+    void toggleSelectLoop(int idx) override;
+    void setSelectedLoopMask(uint64_t mask) override;
+
     // Settings
     void setDefaultQuantize(Quantize q) override;
     int setLookbackBars(int bars) override;

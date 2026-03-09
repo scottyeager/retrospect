@@ -532,20 +532,20 @@ void LoopEngine::scheduleOp(OpType type, int loopIndex, Quantize quantize) {
 
 void LoopEngine::scheduleCaptureLoop(int loopIndex, Quantize quantize,
                                      double lookbackBarsOverride) {
-    int targetLoop = loopIndex < 0 ? nextEmptySlot() : loopIndex;
     int bars = lookbackBarsOverride > 0
         ? static_cast<int>(std::round(lookbackBarsOverride))
         : lookbackBars_;
 
     EngineCommand cmd;
     cmd.commandType = CommandType::CaptureLoop;
-    cmd.loopIndex = targetLoop;
+    cmd.loopIndex = loopIndex;
     cmd.quantize = quantize;
     cmd.lookbackBars = bars;
     enqueueCommand(cmd);
 
     std::ostringstream msg;
-    msg << "Capture " << bars << " bar(s) -> Loop " << targetLoop;
+    msg << "Capture " << bars << " bar(s) -> "
+        << (loopIndex < 0 ? "selected loops" : "Loop " + std::to_string(loopIndex));
     if (quantize != Quantize::Free) {
         msg << " (pending: " << (quantize == Quantize::Beat ? "next beat" : "next bar") << ")";
     }
@@ -562,16 +562,15 @@ void LoopEngine::scheduleSetSpeed(int loopIndex, double speed, Quantize quantize
 }
 
 void LoopEngine::scheduleRecord(int loopIndex, Quantize quantize) {
-    int targetLoop = loopIndex < 0 ? nextEmptySlot() : loopIndex;
-
     EngineCommand cmd;
     cmd.commandType = CommandType::Record;
-    cmd.loopIndex = targetLoop;
+    cmd.loopIndex = loopIndex;
     cmd.quantize = quantize;
     enqueueCommand(cmd);
 
     std::ostringstream msg;
-    msg << "Record -> Loop " << targetLoop;
+    msg << "Record -> "
+        << (loopIndex < 0 ? "selected loops" : "Loop " + std::to_string(loopIndex));
     if (quantize != Quantize::Free) {
         msg << " (pending: " << (quantize == Quantize::Beat ? "next beat" : "next bar") << ")";
     }
@@ -623,6 +622,21 @@ int LoopEngine::activeLoopCount() const {
         if (!lp.isEmpty()) ++count;
     }
     return count;
+}
+
+void LoopEngine::selectLoop(int idx) {
+    if (idx < 0 || idx >= maxLoops()) return;
+    selectedLoopMask_.fetch_or(uint64_t(1) << idx, std::memory_order_relaxed);
+}
+
+void LoopEngine::deselectLoop(int idx) {
+    if (idx < 0 || idx >= maxLoops()) return;
+    selectedLoopMask_.fetch_and(~(uint64_t(1) << idx), std::memory_order_relaxed);
+}
+
+void LoopEngine::toggleSelectLoop(int idx) {
+    if (idx < 0 || idx >= maxLoops()) return;
+    selectedLoopMask_.fetch_xor(uint64_t(1) << idx, std::memory_order_relaxed);
 }
 
 int LoopEngine::nextEmptySlot() const {
@@ -682,103 +696,114 @@ int64_t LoopEngine::computeExecuteSample(Quantize quantize) const {
 void LoopEngine::drainCommands() {
     EngineCommand cmd;
     while (commandQueue_.pop(cmd)) {
+        /// Invoke fn(loopIndex) for each targeted loop.
+        /// loopIndex >= 0 targets that loop; -1 expands to all selected loops.
+        auto forEachTarget = [&](int idx, auto fn) {
+            if (idx >= 0 && idx < maxLoops()) {
+                fn(idx);
+            } else if (idx == -1) {
+                uint64_t mask = selectedLoopMask_.load(std::memory_order_relaxed);
+                for (int i = 0; i < maxLoops() && mask; ++i, mask >>= 1) {
+                    if (mask & 1) fn(i);
+                }
+            }
+        };
+
         switch (cmd.commandType) {
             case CommandType::ScheduleOp: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
                 int64_t execSample = computeExecuteSample(cmd.quantize);
-
-                switch (cmd.opType) {
-                    case OpType::Mute:
-                        ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                        ps.muteOp = PendingState::MuteOp::Mute;
-                        break;
-                    case OpType::Unmute:
-                        ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                        ps.muteOp = PendingState::MuteOp::Unmute;
-                        break;
-                    case OpType::ToggleMute:
-                        ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                        ps.muteOp = PendingState::MuteOp::Toggle;
-                        break;
-                    case OpType::Reverse:
-                        ps.reverse = PendingTimedOp{execSample, cmd.quantize};
-                        break;
-                    case OpType::StartOverdub:
-                        ps.overdub = PendingTimedOp{execSample, cmd.quantize};
-                        ps.overdubOp = PendingState::OverdubOp::Start;
-                        break;
-                    case OpType::StopOverdub:
-                        ps.overdub = PendingTimedOp{execSample, cmd.quantize};
-                        ps.overdubOp = PendingState::OverdubOp::Stop;
-                        break;
-                    case OpType::UndoLayer:
-                        if (ps.undo && ps.undo->direction == UndoDirection::Undo) {
-                            ps.undo->count++;
-                        } else {
-                            ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Undo};
-                        }
-                        break;
-                    case OpType::RedoLayer:
-                        if (ps.undo && ps.undo->direction == UndoDirection::Redo) {
-                            ps.undo->count++;
-                        } else {
-                            ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Redo};
-                        }
-                        break;
-                    case OpType::ClearLoop:
-                        ps.clear = PendingTimedOp{execSample, cmd.quantize};
-                        break;
-                    // These use dedicated CommandTypes, but handle gracefully
-                    case OpType::CaptureLoop:
-                    case OpType::Record:
-                    case OpType::StopRecord:
-                    case OpType::SetSpeed:
-                        break;
-                }
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
+                    switch (cmd.opType) {
+                        case OpType::Mute:
+                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
+                            ps.muteOp = PendingState::MuteOp::Mute;
+                            break;
+                        case OpType::Unmute:
+                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
+                            ps.muteOp = PendingState::MuteOp::Unmute;
+                            break;
+                        case OpType::ToggleMute:
+                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
+                            ps.muteOp = PendingState::MuteOp::Toggle;
+                            break;
+                        case OpType::Reverse:
+                            ps.reverse = PendingTimedOp{execSample, cmd.quantize};
+                            break;
+                        case OpType::StartOverdub:
+                            ps.overdub = PendingTimedOp{execSample, cmd.quantize};
+                            ps.overdubOp = PendingState::OverdubOp::Start;
+                            break;
+                        case OpType::StopOverdub:
+                            ps.overdub = PendingTimedOp{execSample, cmd.quantize};
+                            ps.overdubOp = PendingState::OverdubOp::Stop;
+                            break;
+                        case OpType::UndoLayer:
+                            if (ps.undo && ps.undo->direction == UndoDirection::Undo) {
+                                ps.undo->count++;
+                            } else {
+                                ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Undo};
+                            }
+                            break;
+                        case OpType::RedoLayer:
+                            if (ps.undo && ps.undo->direction == UndoDirection::Redo) {
+                                ps.undo->count++;
+                            } else {
+                                ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Redo};
+                            }
+                            break;
+                        case OpType::ClearLoop:
+                            ps.clear = PendingTimedOp{execSample, cmd.quantize};
+                            break;
+                        // These use dedicated CommandTypes, but handle gracefully
+                        case OpType::CaptureLoop:
+                        case OpType::Record:
+                        case OpType::StopRecord:
+                        case OpType::SetSpeed:
+                            break;
+                    }
+                });
                 break;
             }
             case CommandType::CaptureLoop: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                PendingCapture cap;
-                cap.executeSample = computeExecuteSample(cmd.quantize);
-                cap.quantize = cmd.quantize;
-                cap.lookbackSamples = static_cast<int64_t>(
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                int64_t lookbackSamples = static_cast<int64_t>(
                     std::round(static_cast<double>(cmd.lookbackBars) *
                                metronome_.samplesPerBar()));
-                ps.capture = cap;
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
+                    PendingCapture cap;
+                    cap.executeSample = execSample;
+                    cap.quantize = cmd.quantize;
+                    cap.lookbackSamples = lookbackSamples;
+                    ps.capture = cap;
+                });
                 break;
             }
             case CommandType::Record: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize), cmd.quantize};
-                ps.recordOp = PendingState::RecordOp::Start;
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
+                    ps.record = PendingTimedOp{execSample, cmd.quantize};
+                    ps.recordOp = PendingState::RecordOp::Start;
+                });
                 break;
             }
             case CommandType::StopRecord: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                ps.record = PendingTimedOp{computeExecuteSample(cmd.quantize), cmd.quantize};
-                ps.recordOp = PendingState::RecordOp::Stop;
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
+                    ps.record = PendingTimedOp{execSample, cmd.quantize};
+                    ps.recordOp = PendingState::RecordOp::Stop;
+                });
                 break;
             }
             case CommandType::SetSpeed: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                ps.speed = PendingSpeed{computeExecuteSample(cmd.quantize),
-                                        cmd.quantize, cmd.value};
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
+                    ps.speed = PendingSpeed{execSample, cmd.quantize, cmd.value};
+                });
                 break;
             }
             case CommandType::SetBpm: {

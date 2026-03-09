@@ -392,33 +392,36 @@ void Tui::handleKey(int key) {
         case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8':
             selectedLoop_ = key - '1';
+            client_.setSelectedLoopMask(uint64_t(1) << selectedLoop_);
             break;
 
         // Loop navigation: up/down arrows (with wrap)
         case KEY_UP:
             selectedLoop_ = (selectedLoop_ - 1 + snap.maxLoops) % snap.maxLoops;
+            client_.setSelectedLoopMask(uint64_t(1) << selectedLoop_);
             break;
         case KEY_DOWN:
             selectedLoop_ = (selectedLoop_ + 1) % snap.maxLoops;
+            client_.setSelectedLoopMask(uint64_t(1) << selectedLoop_);
             break;
 
         // Capture loop from ring buffer
         case ' ':
-            client_.scheduleCaptureLoop(selectedLoop_, q);
+            client_.scheduleCaptureLoop(-1, q);
             break;
 
         // Classic record toggle
         case 'r':
-            if (snap.isRecording && snap.recordingLoopIndex == selectedLoop_) {
-                client_.scheduleStopRecord(selectedLoop_, q);
-            } else if (!snap.isRecording) {
-                client_.scheduleRecord(selectedLoop_, q);
+            if (snap.isRecording) {
+                client_.scheduleStopRecord(snap.recordingLoopIndex, q);
+            } else {
+                client_.scheduleRecord(-1, q);
             }
             break;
 
         // Mute/unmute
         case 'm':
-            client_.scheduleOp(OpType::ToggleMute, selectedLoop_, q);
+            client_.scheduleOp(OpType::ToggleMute, -1, q);
             break;
 
         // Toggle metronome click
@@ -439,39 +442,39 @@ void Tui::handleKey(int key) {
 
         // Reverse
         case 'v':
-            client_.scheduleOp(OpType::Reverse, selectedLoop_, q);
+            client_.scheduleOp(OpType::Reverse, -1, q);
             break;
 
         // Start overdub
         case 'o':
-            client_.scheduleOp(OpType::StartOverdub, selectedLoop_, q);
+            client_.scheduleOp(OpType::StartOverdub, -1, q);
             break;
 
         // Stop overdub
         case 'O':
-            client_.scheduleOp(OpType::StopOverdub, selectedLoop_, q);
+            client_.scheduleOp(OpType::StopOverdub, -1, q);
             break;
 
         // Undo layer
         case 'u':
-            client_.scheduleOp(OpType::UndoLayer, selectedLoop_, Quantize::Free);
+            client_.scheduleOp(OpType::UndoLayer, -1, Quantize::Free);
             break;
 
         // Redo layer
         case 'U':
-            client_.scheduleOp(OpType::RedoLayer, selectedLoop_, Quantize::Free);
+            client_.scheduleOp(OpType::RedoLayer, -1, Quantize::Free);
             break;
 
         // Clear loop
         case 'c':
-            client_.executeOpNow(OpType::ClearLoop, selectedLoop_);
+            client_.executeOpNow(OpType::ClearLoop, -1);
             break;
 
         // Speed decrease
         case '[': {
             const auto& lp = snap.loops[static_cast<size_t>(selectedLoop_)];
             double newSpeed = lp.speed * 0.5;
-            client_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
+            client_.scheduleSetSpeed(-1, newSpeed, q);
             break;
         }
 
@@ -479,7 +482,7 @@ void Tui::handleKey(int key) {
         case ']': {
             const auto& lp = snap.loops[static_cast<size_t>(selectedLoop_)];
             double newSpeed = lp.speed * 2.0;
-            client_.scheduleSetSpeed(selectedLoop_, newSpeed, q);
+            client_.scheduleSetSpeed(-1, newSpeed, q);
             break;
         }
 

@@ -54,6 +54,11 @@ void LocalEngineClient::cancelPending() {
     engine_.cancelPending();
 }
 
+void LocalEngineClient::selectLoop(int idx) { engine_.selectLoop(idx); }
+void LocalEngineClient::deselectLoop(int idx) { engine_.deselectLoop(idx); }
+void LocalEngineClient::toggleSelectLoop(int idx) { engine_.toggleSelectLoop(idx); }
+void LocalEngineClient::setSelectedLoopMask(uint64_t mask) { engine_.setSelectedLoopMask(mask); }
+
 void LocalEngineClient::setDefaultQuantize(Quantize q) {
     engine_.setDefaultQuantize(q);
 }
@@ -171,6 +176,9 @@ void LocalEngineClient::poll() {
                 ? peaks[static_cast<size_t>(ch)] : 0.0f;
         }
     }
+
+    // Selection
+    snap_.selectedLoopMask = engine_.selectedLoopMask();
 
     // Settings
     snap_.defaultQuantize = engine_.defaultQuantize();

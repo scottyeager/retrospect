@@ -31,6 +31,12 @@ public:
     void executeOpNow(OpType type, int loopIndex) override;
     void cancelPending() override;
 
+    // Loop selection
+    void selectLoop(int idx) override;
+    void deselectLoop(int idx) override;
+    void toggleSelectLoop(int idx) override;
+    void setSelectedLoopMask(uint64_t mask) override;
+
     // Settings
     void setDefaultQuantize(Quantize q) override;
     int setLookbackBars(int bars) override;
@@ -60,6 +66,8 @@ private:
                                lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleLog(const char* path, const char* types,
                          lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleSelection(const char* path, const char* types,
+                               lo_arg** argv, int argc, lo_message msg, void* user);
     static void errorHandler(int num, const char* msg, const char* path);
 
     lo_server server_ = nullptr;       // Non-threaded receiver

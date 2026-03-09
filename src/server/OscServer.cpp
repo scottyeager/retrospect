@@ -61,6 +61,14 @@ bool OscServer::start() {
                                 handleLookbackBars, this);
     lo_server_thread_add_method(serverThread_, "/retro/cancel_pending", "",
                                 handleCancelPending, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/select", "i",
+                                handleSelectLoop, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/deselect", "i",
+                                handleDeselectLoop, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/toggle_select", "i",
+                                handleToggleSelectLoop, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/select_mask", "h",
+                                handleSelectMask, this);
     lo_server_thread_add_method(serverThread_, "/retro/client/subscribe", "si",
                                 handleSubscribe, this);
     lo_server_thread_add_method(serverThread_, "/retro/client/unsubscribe", "si",
@@ -150,6 +158,10 @@ void OscServer::pushStateTo(lo_address addr) {
             static_cast<int>(engine_.sampleRate()),
             engine_.midiSyncEnabled() ? 1 : 0,
             engine_.midiSync().hasOutput() ? 1 : 0);
+
+    // Selection mask
+    lo_send(addr, "/retro/state/selection", "h",
+            static_cast<int64_t>(engine_.selectedLoopMask()));
 
     // Pending ops: send clear first, then each op from loop-level state
     lo_send(addr, "/retro/state/pending_clear", "");
@@ -344,6 +356,34 @@ int OscServer::handleCancelPending(const char*, const char*, lo_arg**,
                                     int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
     self->engine_.cancelPending();
+    return 0;
+}
+
+int OscServer::handleSelectLoop(const char*, const char*, lo_arg** argv,
+                                 int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.selectLoop(argv[0]->i);
+    return 0;
+}
+
+int OscServer::handleDeselectLoop(const char*, const char*, lo_arg** argv,
+                                   int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.deselectLoop(argv[0]->i);
+    return 0;
+}
+
+int OscServer::handleToggleSelectLoop(const char*, const char*, lo_arg** argv,
+                                       int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.toggleSelectLoop(argv[0]->i);
+    return 0;
+}
+
+int OscServer::handleSelectMask(const char*, const char*, lo_arg** argv,
+                                 int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.setSelectedLoopMask(static_cast<uint64_t>(argv[0]->h));
     return 0;
 }
 

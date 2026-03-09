@@ -74,6 +74,7 @@ struct EngineSnapshot {
     double sampleRate = 44100.0;
     int maxLoops = 8;
     int activeLoopCount = 0;
+    uint64_t selectedLoopMask = 1;
 
     /// Messages received since last poll
     std::vector<std::string> messages;
@@ -135,6 +136,12 @@ public:
                                   Quantize quantize) = 0;
     virtual void executeOpNow(OpType type, int loopIndex) = 0;
     virtual void cancelPending() = 0;
+
+    // --- Loop selection ---
+    virtual void selectLoop(int idx) = 0;
+    virtual void deselectLoop(int idx) = 0;
+    virtual void toggleSelectLoop(int idx) = 0;
+    virtual void setSelectedLoopMask(uint64_t mask) = 0;
 
     // --- Settings ---
     virtual void setDefaultQuantize(Quantize q) = 0;

@@ -77,6 +77,14 @@ private:
                                   lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleCancelPending(const char* path, const char* types,
                                    lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleSelectLoop(const char* path, const char* types,
+                                lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleDeselectLoop(const char* path, const char* types,
+                                  lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleToggleSelectLoop(const char* path, const char* types,
+                                      lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleSelectMask(const char* path, const char* types,
+                                lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleSubscribe(const char* path, const char* types,
                                lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleUnsubscribe(const char* path, const char* types,

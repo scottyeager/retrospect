@@ -42,6 +42,8 @@ OscEngineClient::OscEngineClient(const std::string& host, const std::string& por
                          handlePendingOp, this);
     lo_server_add_method(server_, "/retro/state/log", "s",
                          handleLog, this);
+    lo_server_add_method(server_, "/retro/state/selection", "h",
+                         handleSelection, this);
 
     // Initialize default snapshot
     snap_.loops.resize(8);
@@ -167,6 +169,26 @@ void OscEngineClient::cancelPending() {
     lo_send(serverAddr_, "/retro/cancel_pending", "");
 }
 
+void OscEngineClient::selectLoop(int idx) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/select", "i", idx);
+}
+
+void OscEngineClient::deselectLoop(int idx) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/deselect", "i", idx);
+}
+
+void OscEngineClient::toggleSelectLoop(int idx) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/toggle_select", "i", idx);
+}
+
+void OscEngineClient::setSelectedLoopMask(uint64_t mask) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/select_mask", "h", static_cast<int64_t>(mask));
+}
+
 void OscEngineClient::setDefaultQuantize(Quantize q) {
     if (!serverAddr_) return;
     lo_send(serverAddr_, "/retro/settings/quantize", "i", quantizeToInt(q));
@@ -287,6 +309,13 @@ int OscEngineClient::handleLog(const char*, const char*, lo_arg** argv,
                                 int, lo_message, void* user) {
     auto* self = static_cast<OscEngineClient*>(user);
     self->snap_.messages.push_back(&argv[0]->s);
+    return 0;
+}
+
+int OscEngineClient::handleSelection(const char*, const char*, lo_arg** argv,
+                                      int, lo_message, void* user) {
+    auto* self = static_cast<OscEngineClient*>(user);
+    self->snap_.selectedLoopMask = static_cast<uint64_t>(argv[0]->h);
     return 0;
 }
 

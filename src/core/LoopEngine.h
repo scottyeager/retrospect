@@ -226,6 +226,14 @@ public:
     /// with our internal timeline.
     void setTransportPositionCallback(std::function<void(int64_t)> cb) { transportPositionCallback_ = std::move(cb); }
 
+    /// Loop selection — bitmask of which loops are targeted by commands with loopIndex == -1
+    void selectLoop(int idx);
+    void deselectLoop(int idx);
+    void toggleSelectLoop(int idx);
+    void setSelectedLoopMask(uint64_t mask) { selectedLoopMask_.store(mask, std::memory_order_relaxed); }
+    uint64_t selectedLoopMask() const { return selectedLoopMask_.load(std::memory_order_relaxed); }
+    bool isLoopSelected(int idx) const { return (selectedLoopMask() >> idx) & 1; }
+
     /// Find the next available (empty) loop slot. Returns -1 if all full.
     int nextEmptySlot() const;
 
@@ -295,6 +303,7 @@ private:
     std::atomic<bool> isRecordingAtomic_{false};
     std::atomic<int> recordingLoopIdxAtomic_{-1};
     std::atomic<uint64_t> liveChannelMask_{0};
+    std::atomic<uint64_t> selectedLoopMask_{0x1};  // Loop 0 selected by default
 };
 
 } // namespace retrospect
