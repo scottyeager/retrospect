@@ -61,7 +61,8 @@ enum class CommandType {
     StopRecord,     // Stop classic recording
     SetSpeed,       // Change loop playback speed
     SetBpm,         // Change metronome BPM
-    CancelPending   // Cancel all pending ops
+    CancelPending,  // Cancel all pending ops
+    SetMidiSync     // Enable/disable MIDI sync (quantized)
 };
 
 /// Command sent from TUI thread to audio thread
@@ -204,7 +205,10 @@ public:
     MidiSync& midiSync() { return midiSync_; }
     const MidiSync& midiSync() const { return midiSync_; }
     bool midiSyncEnabled() const { return midiSync_.isEnabled(); }
+    /// Direct (unquantized) enable/disable — use for init and shutdown only.
     void setMidiSyncEnabled(bool on) { midiSync_.setEnabled(on); }
+    /// Schedule MIDI sync enable/disable to fire at the next quantize boundary.
+    void scheduleMidiSync(bool on, Quantize quantize);
 
     /// Whether a classic recording is in progress
     bool isRecording() const { return activeRecording_.has_value(); }
@@ -216,6 +220,11 @@ public:
     /// Register a callback that fires when BPM changes at the audio level.
     /// Useful for propagating tempo changes to external systems (e.g. JACK transport).
     void setBpmChangedCallback(std::function<void(double)> cb) { bpmChangedCallback_ = std::move(cb); }
+
+    /// Register a callback called at the start of each processBlock with the
+    /// metronome's current totalSamples. Used to synchronize JACK transport BBT
+    /// with our internal timeline.
+    void setTransportPositionCallback(std::function<void(int64_t)> cb) { transportPositionCallback_ = std::move(cb); }
 
     /// Find the next available (empty) loop slot. Returns -1 if all full.
     int nextEmptySlot() const;
@@ -254,6 +263,9 @@ private:
 
     std::optional<ActiveRecording> activeRecording_;
 
+    /// Pending quantized MIDI sync toggle: {executeSample, enable}
+    std::optional<std::pair<int64_t, bool>> pendingMidiSync_;
+
     /// Per-channel overdub accumulation (scoped per overdub layer)
     std::vector<std::vector<float>> overdubChannelBuffers_;
     uint64_t overdubActiveChannelMask_ = 0;
@@ -272,6 +284,7 @@ private:
     std::string lastMessage_;
 
     std::function<void(double)> bpmChangedCallback_;
+    std::function<void(int64_t)> transportPositionCallback_;
 
     // Thread safety: TUI -> Audio command queue
     SpscQueue<EngineCommand, 256> commandQueue_;

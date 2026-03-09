@@ -315,7 +315,7 @@ int OscServer::handleClick(const char*, const char*, lo_arg** argv,
 int OscServer::handleMidiSync(const char*, const char*, lo_arg** argv,
                                int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
-    self->engine_.setMidiSyncEnabled(argv[0]->i != 0);
+    self->engine_.scheduleMidiSync(argv[0]->i != 0, self->engine_.defaultQuantize());
     return 0;
 }
 

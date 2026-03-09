@@ -67,7 +67,7 @@ void LocalEngineClient::setMetronomeClickEnabled(bool on) {
 }
 
 void LocalEngineClient::setMidiSyncEnabled(bool on) {
-    engine_.setMidiSyncEnabled(on);
+    engine_.scheduleMidiSync(on, engine_.defaultQuantize());
 }
 
 void LocalEngineClient::setBpm(double bpm) {

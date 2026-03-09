@@ -5,6 +5,8 @@
 #include <cmath>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
+#include <cstdio>
 
 namespace retrospect {
 
@@ -114,6 +116,13 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
             if (lp.hasPendingOps()) {
                 flushDueOps(lp, currentSample);
             }
+        }
+
+        // Apply pending MIDI sync toggle at the scheduled sample
+        if (pendingMidiSync_ && pendingMidiSync_->first <= currentSample) {
+            midiSync_.setEnabled(pendingMidiSync_->second);
+            pendingMidiSync_.reset();
+            if (callbacks_.onStateChanged) callbacks_.onStateChanged();
         }
 
         // Mix output from all playing loops
@@ -650,6 +659,14 @@ std::string LoopEngine::statusMessage() const {
     return lastMessage_;
 }
 
+void LoopEngine::scheduleMidiSync(bool on, Quantize quantize) {
+    EngineCommand cmd;
+    cmd.commandType = CommandType::SetMidiSync;
+    cmd.quantize = quantize;
+    cmd.value = on ? 1.0 : 0.0;
+    commandQueue_.push(cmd);
+}
+
 void LoopEngine::enqueueCommand(const EngineCommand& cmd) {
     commandQueue_.push(cmd);
 }
@@ -781,6 +798,10 @@ void LoopEngine::drainCommands() {
                 for (auto& lp : loops_) {
                     lp.clearPendingOps();
                 }
+                break;
+            }
+            case CommandType::SetMidiSync: {
+                pendingMidiSync_ = {computeExecuteSample(cmd.quantize), cmd.value != 0.0};
                 break;
             }
         }
