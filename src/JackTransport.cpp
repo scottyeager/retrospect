@@ -92,6 +92,10 @@ void JackTransport::setBeatsPerBar(int beats) {
     beatsPerBar_.store(beats, std::memory_order_relaxed);
 }
 
+void JackTransport::updateMetronomePosition(int64_t totalSamples) {
+    metronomeSamples_.store(totalSamples, std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Timebase callback
 // ---------------------------------------------------------------------------
@@ -113,8 +117,11 @@ void JackTransport::fillBBT(jack_position_t* pos) const {
     double framesPerBeat = (60.0 / bpm) * sr;
     double framesPerTick = framesPerBeat / kTicksPerBeat;
 
-    // Absolute tick from the frame position
-    double absTick = static_cast<double>(pos->frame) / framesPerTick;
+    // Use our metronome's sample count rather than pos->frame.
+    // The JACK frame counter may be offset from our internal timeline
+    // (e.g. transport started before the first audio callback).
+    int64_t mSamples = metronomeSamples_.load(std::memory_order_relaxed);
+    double absTick = static_cast<double>(mSamples) / framesPerTick;
     double absBeat = absTick / kTicksPerBeat;
 
     int bar  = static_cast<int>(absBeat / beatsPerBar);    // 0-based

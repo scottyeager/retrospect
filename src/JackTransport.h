@@ -55,6 +55,12 @@ public:
     void setBeatsPerBar(int beats);
     int beatsPerBar() const { return beatsPerBar_.load(std::memory_order_relaxed); }
 
+    /// Update with the metronome's current total sample count.
+    /// Called from the audio thread each processBlock so that fillBBT
+    /// reports BBT derived from our internal timeline rather than
+    /// independently from the JACK frame counter.
+    void updateMetronomePosition(int64_t totalSamples);
+
     static constexpr double kTicksPerBeat = 1920.0;
 
 private:
@@ -74,6 +80,7 @@ private:
 
     std::atomic<double> bpm_{120.0};
     std::atomic<int> beatsPerBar_{4};
+    std::atomic<int64_t> metronomeSamples_{0};
 };
 
 } // namespace retrospect

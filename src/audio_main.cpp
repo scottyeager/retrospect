@@ -316,6 +316,9 @@ int main(int argc, char* argv[]) {
                 engine.setBpmChangedCallback([&jackTransport](double bpm) {
                     if (jackTransport) jackTransport->setBpm(bpm);
                 });
+                engine.setTransportPositionCallback([&jackTransport](int64_t totalSamples) {
+                    if (jackTransport) jackTransport->updateMetronomePosition(totalSamples);
+                });
             } else {
                 jackTransport.reset();
             }

@@ -75,6 +75,11 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
     // Drain commands from TUI thread at the start of each block
     drainCommands();
 
+    // Update external transport (JACK BBT) with our metronome's position
+    if (transportPositionCallback_) {
+        transportPositionCallback_(metronome_.position().totalSamples);
+    }
+
     int engineChannels = static_cast<int>(inputChannels_.size());
 
     for (int i = 0; i < numSamples; ++i) {
