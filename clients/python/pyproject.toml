@@ -9,3 +9,10 @@ dependencies = [
 
 [project.scripts]
 retro-cli = "retro_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["retrospect_client.py", "retro_cli.py"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
