@@ -107,6 +107,7 @@ class EngineState:
     pending_ops: list[PendingOp] = field(default_factory=list)
     is_recording: bool = False
     recording_loop_index: int = -1
+    selected_loop_mask: int = 1
     default_quantize: Quantize = Quantize.BAR
     lookback_bars: int = 1
     click_enabled: bool = True
@@ -162,6 +163,7 @@ class RetrospectClient:
         self._dispatcher.map("/retro/state/pending_clear", self._handle_pending_clear)
         self._dispatcher.map("/retro/state/pending_op", self._handle_pending_op)
         self._dispatcher.map("/retro/state/log", self._handle_log)
+        self._dispatcher.map("/retro/state/selection", self._handle_selection)
 
     # -- Lifecycle ------------------------------------------------------------
 
@@ -324,6 +326,24 @@ class RetrospectClient:
         """Cancel all pending (queued) operations."""
         self._client.send_message("/retro/cancel_pending", [])
 
+    # -- Loop selection -------------------------------------------------------
+
+    def select_loop(self, idx: int) -> None:
+        """Add a loop to the selection."""
+        self._client.send_message("/retro/loop/select", [idx])
+
+    def deselect_loop(self, idx: int) -> None:
+        """Remove a loop from the selection."""
+        self._client.send_message("/retro/loop/deselect", [idx])
+
+    def toggle_select_loop(self, idx: int) -> None:
+        """Toggle a loop's selection state."""
+        self._client.send_message("/retro/loop/toggle_select", [idx])
+
+    def set_selected_loop_mask(self, mask: int) -> None:
+        """Set the full selection bitmask."""
+        self._client.send_message("/retro/loop/select_mask", [mask])
+
     # -- Internal: subscription -----------------------------------------------
 
     def _subscribe(self) -> None:
@@ -397,6 +417,10 @@ class RetrospectClient:
         )
         with self._lock:
             self._state.pending_ops.append(op)
+
+    def _handle_selection(self, address: str, *args) -> None:
+        with self._lock:
+            self._state.selected_loop_mask = args[0]
 
     def _handle_log(self, address: str, *args) -> None:
         msg = args[0]
