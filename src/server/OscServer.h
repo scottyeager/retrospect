@@ -77,6 +77,12 @@ private:
                                   lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleCancelPending(const char* path, const char* types,
                                    lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleScrambleOn(const char* path, const char* types,
+                                lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleScrambleOff(const char* path, const char* types,
+                                 lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleScrambleWindow(const char* path, const char* types,
+                                    lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleSubscribe(const char* path, const char* types,
                                lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleUnsubscribe(const char* path, const char* types,

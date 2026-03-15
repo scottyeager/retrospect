@@ -271,6 +271,9 @@ int main(int argc, char* argv[]) {
     engine.setLookbackBars(cfg.lookbackBars);
     engine.setMidiSyncEnabled(cfg.midiSyncEnabled);
     engine.setDefaultQuantize(quantizeFromString(cfg.defaultQuantize));
+    engine.setDefaultScrambleParams({cfg.scrambleWindowDuration,
+                                     cfg.scrambleFadeDuration,
+                                     cfg.scrambleAllowRepeat});
 
     // Open MIDI output: use --midi-out / config device if specified, otherwise create a virtual device
     std::unique_ptr<juce::MidiOutput> midiOutput;

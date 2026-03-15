@@ -61,6 +61,12 @@ bool OscServer::start() {
                                 handleLookbackBars, this);
     lo_server_thread_add_method(serverThread_, "/retro/cancel_pending", "",
                                 handleCancelPending, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/scramble_on", "iiddii",
+                                handleScrambleOn, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/scramble_off", "ii",
+                                handleScrambleOff, this);
+    lo_server_thread_add_method(serverThread_, "/retro/loop/scramble_window", "id",
+                                handleScrambleWindow, this);
     lo_server_thread_add_method(serverThread_, "/retro/client/subscribe", "si",
                                 handleSubscribe, this);
     lo_server_thread_add_method(serverThread_, "/retro/client/unsubscribe", "si",
@@ -183,6 +189,10 @@ void OscServer::pushStateTo(lo_address addr) {
             sendOp(desc, ps.undo->quantize);
         }
         if (ps.clear) sendOp("Clear", ps.clear->quantize);
+        if (ps.scramble) {
+            const char* desc = ps.scramble->enable ? "Scramble On" : "Scramble Off";
+            sendOp(desc, ps.scramble->quantize);
+        }
     }
 
     // Log messages
@@ -358,6 +368,33 @@ int OscServer::handleUnsubscribe(const char*, const char*, lo_arg** argv,
                                   int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
     self->removeSubscriber(&argv[0]->s, argv[1]->i);
+    return 0;
+}
+
+int OscServer::handleScrambleOn(const char*, const char*, lo_arg** argv,
+                                int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    int loopIdx = argv[0]->i;
+    Quantize q = intToQuantize(argv[1]->i);
+    ScrambleParams params;
+    params.windowDuration = argv[2]->d;
+    params.fadeDuration = argv[3]->d;
+    params.allowRepeat = argv[4]->i != 0;
+    self->engine_.scheduleScrambleOn(loopIdx, q, params);
+    return 0;
+}
+
+int OscServer::handleScrambleOff(const char*, const char*, lo_arg** argv,
+                                  int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.scheduleScrambleOff(argv[0]->i, intToQuantize(argv[1]->i));
+    return 0;
+}
+
+int OscServer::handleScrambleWindow(const char*, const char*, lo_arg** argv,
+                                     int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.setScrambleWindowDuration(argv[0]->i, argv[1]->d);
     return 0;
 }
 

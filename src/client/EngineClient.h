@@ -34,6 +34,7 @@ struct LoopSnapshot {
     int64_t lengthSamples = 0;
     double recordedBpm = 0.0;
     bool timeStretchActive = false;
+    bool scrambleActive = false;
 
     bool isEmpty() const { return state == LoopState::Empty; }
     bool isMuted() const { return state == LoopState::Muted; }
@@ -74,6 +75,9 @@ struct EngineSnapshot {
     double sampleRate = 44100.0;
     int maxLoops = 8;
     int activeLoopCount = 0;
+
+    /// Default scramble parameters
+    ScrambleParams defaultScrambleParams;
 
     /// Messages received since last poll
     std::vector<std::string> messages;
@@ -135,6 +139,10 @@ public:
                                   Quantize quantize) = 0;
     virtual void executeOpNow(OpType type, int loopIndex) = 0;
     virtual void cancelPending() = 0;
+    virtual void scheduleScrambleOn(int loopIndex, Quantize quantize,
+                                    const ScrambleParams& params) = 0;
+    virtual void scheduleScrambleOff(int loopIndex, Quantize quantize) = 0;
+    virtual void setScrambleWindowDuration(int loopIndex, double beats) = 0;
 
     // --- Settings ---
     virtual void setDefaultQuantize(Quantize q) = 0;

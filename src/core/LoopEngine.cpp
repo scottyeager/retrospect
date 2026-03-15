@@ -22,8 +22,12 @@ std::string opTypeDescription(OpType type) {
         case OpType::StopOverdub:  return "Stop Overdub";
         case OpType::UndoLayer:    return "Undo Layer";
         case OpType::RedoLayer:    return "Redo Layer";
-        case OpType::SetSpeed:     return "Set Speed";
-        case OpType::ClearLoop:    return "Clear";
+        case OpType::SetSpeed:         return "Set Speed";
+        case OpType::ClearLoop:        return "Clear";
+        case OpType::Seek:             return "Seek";
+        case OpType::ScrambleOn:       return "Scramble On";
+        case OpType::ScrambleOff:      return "Scramble Off";
+        case OpType::SetScrambleWindow: return "Set Scramble Window";
     }
     return "Unknown";
 }
@@ -290,6 +294,21 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
         lp.setSpeed(spd);
         lastMessage_ = "Loop " + std::to_string(lp.id()) + " speed: " +
                       std::to_string(spd) + "x";
+        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    }
+
+    // Scramble on/off
+    if (ps.scramble && ps.scramble->executeSample <= currentSample) {
+        PendingScramble sc = *ps.scramble;
+        ps.scramble.reset();
+        if (sc.enable) {
+            lp.scrambleOn(sc.params, metronome_.samplesPerBeat());
+            lastMessage_ = "Loop " + std::to_string(lp.id()) + " scramble ON";
+        } else {
+            lp.scrambleOff();
+            lastMessage_ = "Loop " + std::to_string(lp.id()) + " scramble OFF";
+        }
         if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
         if (callbacks_.onStateChanged) callbacks_.onStateChanged();
     }
@@ -580,6 +599,49 @@ void LoopEngine::scheduleStopRecord(int loopIndex, Quantize quantize) {
     if (callbacks_.onMessage) callbacks_.onMessage(msg);
 }
 
+void LoopEngine::scheduleScrambleOn(int loopIndex, Quantize quantize,
+                                    const ScrambleParams& params) {
+    EngineCommand cmd;
+    cmd.commandType = CommandType::ScrambleOn;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = quantize;
+    cmd.scrambleParams = params;
+    enqueueCommand(cmd);
+
+    std::string msg = "Scramble On";
+    if (quantize != Quantize::Free) {
+        msg += " (pending: ";
+        msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
+        msg += ")";
+    }
+    if (callbacks_.onMessage) callbacks_.onMessage(msg);
+}
+
+void LoopEngine::scheduleScrambleOff(int loopIndex, Quantize quantize) {
+    EngineCommand cmd;
+    cmd.commandType = CommandType::ScrambleOff;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = quantize;
+    enqueueCommand(cmd);
+
+    std::string msg = "Scramble Off";
+    if (quantize != Quantize::Free) {
+        msg += " (pending: ";
+        msg += (quantize == Quantize::Beat ? "next beat" : "next bar");
+        msg += ")";
+    }
+    if (callbacks_.onMessage) callbacks_.onMessage(msg);
+}
+
+void LoopEngine::setScrambleWindowDuration(int loopIndex, double beats) {
+    EngineCommand cmd;
+    cmd.commandType = CommandType::SetScrambleWindow;
+    cmd.loopIndex = loopIndex;
+    cmd.quantize = Quantize::Free;
+    cmd.value = beats;
+    enqueueCommand(cmd);
+}
+
 void LoopEngine::executeOpNow(OpType type, int loopIndex) {
     if (type == OpType::CaptureLoop) {
         scheduleCaptureLoop(loopIndex, Quantize::Free);
@@ -714,6 +776,10 @@ void LoopEngine::drainCommands() {
                     case OpType::Record:
                     case OpType::StopRecord:
                     case OpType::SetSpeed:
+                    case OpType::Seek:
+                    case OpType::ScrambleOn:
+                    case OpType::ScrambleOff:
+                    case OpType::SetScrambleWindow:
                         break;
                 }
                 break;
@@ -776,6 +842,38 @@ void LoopEngine::drainCommands() {
                 for (auto& lp : loops_) {
                     lp.clearPendingOps();
                 }
+                break;
+            }
+            case CommandType::ScrambleOn: {
+                int idx = cmd.loopIndex;
+                if (idx < 0 || idx >= maxLoops()) break;
+                Loop& lp = loops_[static_cast<size_t>(idx)];
+                auto& ps = lp.pendingState();
+                PendingScramble sc;
+                sc.executeSample = computeExecuteSample(cmd.quantize);
+                sc.quantize = cmd.quantize;
+                sc.enable = true;
+                sc.params = cmd.scrambleParams;
+                ps.scramble = sc;
+                break;
+            }
+            case CommandType::ScrambleOff: {
+                int idx = cmd.loopIndex;
+                if (idx < 0 || idx >= maxLoops()) break;
+                Loop& lp = loops_[static_cast<size_t>(idx)];
+                auto& ps = lp.pendingState();
+                PendingScramble sc;
+                sc.executeSample = computeExecuteSample(cmd.quantize);
+                sc.quantize = cmd.quantize;
+                sc.enable = false;
+                ps.scramble = sc;
+                break;
+            }
+            case CommandType::SetScrambleWindow: {
+                int idx = cmd.loopIndex;
+                if (idx < 0 || idx >= maxLoops()) break;
+                Loop& lp = loops_[static_cast<size_t>(idx)];
+                lp.setScrambleWindowDuration(cmd.value);
                 break;
             }
         }

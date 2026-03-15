@@ -91,6 +91,10 @@ float Loop::processSample() {
         return 0.0f;
     }
 
+    if (scrambleActive_) {
+        return processScrambleSample();
+    }
+
     if (isTimeStretchActive()) {
         return processStretchedSample();
     }
@@ -178,6 +182,96 @@ void Loop::fillStretchBuffer() {
         stretchBuf_[static_cast<size_t>(writeIdx)] = stretchOutputWork_[static_cast<size_t>(i)];
     }
     stretchBufAvail_ += kStretchBlockSize;
+}
+
+float Loop::processScrambleSample() {
+    // Pick a new snippet if we've exhausted the current one
+    if (scrambleSnippetPos_ >= scrambleSnippetLen_) {
+        // Compute snippet length from (possibly updated) window duration
+        scrambleSnippetLen_ = std::max(int64_t(1),
+            static_cast<int64_t>(scrambleParams_.windowDuration * scrambleSamplesPerBeat_));
+        scrambleFadeSamples_ = std::max(int64_t(0),
+            static_cast<int64_t>(scrambleParams_.fadeDuration * scrambleSamplesPerBeat_));
+
+        // Pick a random start position
+        std::uniform_int_distribution<int64_t> dist(0, loopLength_ - 1);
+        int64_t newStart;
+        if (!scrambleParams_.allowRepeat && loopLength_ > 1) {
+            // Try up to a few times to avoid the same start
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                newStart = dist(scrambleRng_);
+                if (newStart != scrambleLastStart_) break;
+            }
+        } else {
+            newStart = dist(scrambleRng_);
+        }
+        scrambleReadStart_ = newStart;
+        scrambleLastStart_ = newStart;
+        scrambleSnippetPos_ = 0;
+    }
+
+    // Compute read position (wrapping within loop)
+    int64_t readPos = (scrambleReadStart_ + scrambleSnippetPos_) % loopLength_;
+
+    // Compute scramble envelope (fade in/out)
+    float envelope = 1.0f;
+    if (scrambleFadeSamples_ > 0) {
+        // Fade in
+        if (scrambleSnippetPos_ < scrambleFadeSamples_) {
+            float fadeIn = static_cast<float>(scrambleSnippetPos_) /
+                           static_cast<float>(scrambleFadeSamples_);
+            envelope = std::min(envelope, fadeIn);
+        }
+        // Fade out
+        int64_t distFromEnd = scrambleSnippetLen_ - 1 - scrambleSnippetPos_;
+        if (distFromEnd < scrambleFadeSamples_) {
+            float fadeOut = static_cast<float>(distFromEnd) /
+                            static_cast<float>(scrambleFadeSamples_);
+            envelope = std::min(envelope, fadeOut);
+        }
+    }
+
+    float sample = getMixedSample(readPos) * envelope;
+
+    // Advance
+    scrambleSnippetPos_++;
+    // Keep playPos_ roughly in sync for display purposes
+    playPos_ = readPos;
+
+    return sample;
+}
+
+void Loop::seek(int64_t samplePos) {
+    if (loopLength_ <= 0) return;
+    playPos_ = ((samplePos % loopLength_) + loopLength_) % loopLength_;
+    fractionalPos_ = 0.0;
+
+    // Reset stretch buffer if active
+    if (isTimeStretchActive()) {
+        stretchRawPos_ = playPos_;
+        stretchBufRead_ = 0;
+        stretchBufAvail_ = 0;
+        if (stretcher_) stretcher_->reset();
+    }
+}
+
+void Loop::scrambleOn(const ScrambleParams& params, double samplesPerBeat) {
+    if (state_ == LoopState::Empty || loopLength_ <= 0) return;
+    scrambleActive_ = true;
+    scrambleParams_ = params;
+    scrambleSamplesPerBeat_ = samplesPerBeat;
+    // Force picking a new snippet immediately
+    scrambleSnippetPos_ = scrambleSnippetLen_;
+    scrambleLastStart_ = -1;
+}
+
+void Loop::scrambleOff() {
+    scrambleActive_ = false;
+    // playPos_ is already kept in sync during scramble
+}
+
+void Loop::setScrambleWindowDuration(double beats) {
+    scrambleParams_.windowDuration = std::max(0.0625, beats);
 }
 
 void Loop::processBlock(float* output, int numSamples) {
@@ -286,6 +380,14 @@ void Loop::clear() {
     reversed_ = false;
     speed_ = 1.0;
     lengthInBars_ = 0.0;
+
+    // Clear scramble state
+    scrambleActive_ = false;
+    scrambleSnippetPos_ = 0;
+    scrambleSnippetLen_ = 0;
+    scrambleReadStart_ = 0;
+    scrambleFadeSamples_ = 0;
+    scrambleLastStart_ = -1;
 
     // Clear stretch state
     stretcher_.reset();

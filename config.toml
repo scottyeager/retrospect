@@ -58,6 +58,16 @@
 # MIDI output device name (empty string = virtual device)
 # output_device = ""
 
+[scramble]
+# Length of each scramble snippet in beats (0.0625-64.0)
+# window_duration = 1.0
+
+# Fade in/out duration in beats for each snippet (0.0-16.0)
+# fade_duration = 0.125
+
+# Whether the same start position can be selected consecutively
+# allow_repeat = true
+
 [osc]
 # OSC server port (string or integer)
 # port = 7770

@@ -113,7 +113,7 @@ void Tui::draw() {
     row += static_cast<int>(std::min(snap.pendingOps.size(), size_t(3))) + 2;
 
     drawControls(row);
-    row += 7;
+    row += 8;
 
     drawMessages(row);
 
@@ -317,6 +317,13 @@ void Tui::drawLoops(int startRow) {
                 attroff(COLOR_PAIR(6));
             }
 
+            // Scramble indicator
+            if (lp.scrambleActive) {
+                attron(COLOR_PAIR(3) | A_BOLD);
+                mvprintw(row, 35, "~");
+                attroff(COLOR_PAIR(3) | A_BOLD);
+            }
+
             // Play position as percentage
             if (lp.lengthSamples > 0) {
                 int pct = static_cast<int>(
@@ -366,7 +373,8 @@ void Tui::drawControls(int startRow) {
     mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
     mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        t: Tap tempo");
-    mvprintw(startRow + 6, 2, "S: MIDI sync on/off Esc: Cancel pending    q: Quit");
+    mvprintw(startRow + 6, 2, "s: Scramble toggle  S: MIDI sync on/off    Esc: Cancel pending");
+    mvprintw(startRow + 7, 2, "q: Quit");
 }
 
 void Tui::drawMessages(int startRow) {
@@ -531,6 +539,17 @@ void Tui::handleKey(int key) {
         case 't':
             handleTapTempo();
             break;
+
+        // Toggle scramble mode on selected loop
+        case 's': {
+            const auto& lp = snap.loops[static_cast<size_t>(selectedLoop_)];
+            if (lp.scrambleActive) {
+                client_.scheduleScrambleOff(selectedLoop_, q);
+            } else {
+                client_.scheduleScrambleOn(selectedLoop_, q, snap.defaultScrambleParams);
+            }
+            break;
+        }
 
         // Cancel pending
         case 27: // Escape
