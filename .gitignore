@@ -6,3 +6,12 @@ compile_commands.json
 *.a
 *.so
 *.dylib
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.lock
+.venv/
