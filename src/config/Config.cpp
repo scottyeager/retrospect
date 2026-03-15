@@ -47,6 +47,10 @@ Config Config::load() {
         }
     }
 
+    if (auto v = tbl["audio"]["jack_auto_connect"].value<bool>()) {
+        cfg.jackAutoConnect = *v;
+    }
+
     // [engine]
     if (auto v = tbl["engine"]["max_loops"].value<int64_t>()) {
         if (*v >= 1 && *v <= 64) {

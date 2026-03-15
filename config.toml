@@ -6,6 +6,11 @@
 # Audio backend: "" (auto), "jack", or "alsa"
 # backend = ""
 
+# Auto-connect JACK ports to system I/O on startup
+# Set to false to start with no connections (useful for manual routing)
+# Only applies when using the JACK backend.
+# jack_auto_connect = true
+
 [engine]
 # Number of loop slots (1-64)
 # max_loops = 8

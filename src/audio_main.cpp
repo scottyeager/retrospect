@@ -254,6 +254,35 @@ int main(int argc, char* argv[]) {
             inputLatency, outputLatency, roundTripLatency,
             1000.0 * roundTripLatency / sampleRate);
 
+    // Disconnect JACK ports if auto_connect is disabled
+    if (!cfg.jackAutoConnect) {
+        bool isJack = device->getTypeName().containsIgnoreCase("jack");
+        if (isJack) {
+            jack_client_t* jc = jack_client_open("RetrospectDisconnect",
+                                                  JackNoStartServer, nullptr);
+            if (jc) {
+                // Find all ports owned by the Retrospect JACK client
+                const char** ports = jack_get_ports(jc, "Retrospect:", nullptr, 0);
+                if (ports) {
+                    for (int i = 0; ports[i]; ++i) {
+                        const char** conns = jack_port_get_all_connections(
+                            jc, jack_port_by_name(jc, ports[i]));
+                        if (conns) {
+                            for (int c = 0; conns[c]; ++c) {
+                                jack_disconnect(jc, ports[i], conns[c]);
+                                jack_disconnect(jc, conns[c], ports[i]);
+                            }
+                            jack_free(conns);
+                        }
+                    }
+                    jack_free(ports);
+                }
+                jack_client_close(jc);
+                fprintf(stderr, "JACK auto-connect disabled: disconnected all ports\n");
+            }
+        }
+    }
+
     // Create engine with per-channel ring buffers and live detection
     retrospect::LoopEngine engine(cfg.maxLoops, cfg.maxLookbackBars, sampleRate, cfg.minBpm,
                                   numInputChannels, cfg.liveThreshold, cfg.liveWindowMs);
