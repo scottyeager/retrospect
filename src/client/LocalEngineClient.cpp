@@ -54,6 +54,19 @@ void LocalEngineClient::cancelPending() {
     engine_.cancelPending();
 }
 
+void LocalEngineClient::scheduleScrambleOn(int loopIndex, Quantize quantize,
+                                           const ScrambleParams& params) {
+    engine_.scheduleScrambleOn(loopIndex, quantize, params);
+}
+
+void LocalEngineClient::scheduleScrambleOff(int loopIndex, Quantize quantize) {
+    engine_.scheduleScrambleOff(loopIndex, quantize);
+}
+
+void LocalEngineClient::setScrambleWindowDuration(int loopIndex, double beats) {
+    engine_.setScrambleWindowDuration(loopIndex, beats);
+}
+
 void LocalEngineClient::selectLoop(int idx) { engine_.selectLoop(idx); }
 void LocalEngineClient::deselectLoop(int idx) { engine_.deselectLoop(idx); }
 void LocalEngineClient::toggleSelectLoop(int idx) { engine_.toggleSelectLoop(idx); }
@@ -109,6 +122,7 @@ void LocalEngineClient::poll() {
         ls.lengthSamples = lp.lengthSamples();
         ls.recordedBpm = lp.recordedBpm();
         ls.timeStretchActive = lp.isTimeStretchActive();
+        ls.scrambleActive = lp.isScrambling();
         if (!lp.isEmpty()) ++active;
     }
     snap_.activeLoopCount = active;
@@ -156,6 +170,10 @@ void LocalEngineClient::poll() {
             addOp(desc, ps.undo->quantize, ps.undo->executeSample);
         }
         if (ps.clear) addOp("Clear", ps.clear->quantize, ps.clear->executeSample);
+        if (ps.scramble) {
+            std::string desc = ps.scramble->enable ? "Scramble On" : "Scramble Off";
+            addOp(desc, ps.scramble->quantize, ps.scramble->executeSample);
+        }
     }
     // Sort by execution time for display consistency
     std::sort(snap_.pendingOps.begin(), snap_.pendingOps.end(),
@@ -187,6 +205,7 @@ void LocalEngineClient::poll() {
     snap_.midiSyncEnabled = engine_.midiSyncEnabled();
     snap_.midiOutputAvailable = engine_.midiSync().hasOutput();
     snap_.liveThreshold = engine_.liveThreshold();
+    snap_.defaultScrambleParams = engine_.defaultScrambleParams();
 
     // Drain buffered messages
     {

@@ -145,6 +145,11 @@ void OscEngineClient::scheduleOp(OpType type, int loopIndex, Quantize quantize) 
             return;
         case OpType::SetSpeed:
             return;  // Use scheduleSetSpeed instead
+        case OpType::Seek:
+        case OpType::ScrambleOn:
+        case OpType::ScrambleOff:
+        case OpType::SetScrambleWindow:
+            return;  // Use dedicated methods
     }
 
     if (path) {
@@ -167,6 +172,27 @@ void OscEngineClient::executeOpNow(OpType type, int loopIndex) {
 void OscEngineClient::cancelPending() {
     if (!serverAddr_) return;
     lo_send(serverAddr_, "/retro/cancel_pending", "");
+}
+
+void OscEngineClient::scheduleScrambleOn(int loopIndex, Quantize quantize,
+                                          const ScrambleParams& params) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/scramble_on", "iiddi",
+            loopIndex, quantizeToInt(quantize),
+            params.windowDuration, params.fadeDuration,
+            params.allowRepeat ? 1 : 0);
+}
+
+void OscEngineClient::scheduleScrambleOff(int loopIndex, Quantize quantize) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/scramble_off", "ii",
+            loopIndex, quantizeToInt(quantize));
+}
+
+void OscEngineClient::setScrambleWindowDuration(int loopIndex, double beats) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/loop/scramble_window", "id",
+            loopIndex, beats);
 }
 
 void OscEngineClient::selectLoop(int idx) {

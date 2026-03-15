@@ -25,6 +25,10 @@ public:
                           Quantize quantize) override;
     void executeOpNow(OpType type, int loopIndex) override;
     void cancelPending() override;
+    void scheduleScrambleOn(int loopIndex, Quantize quantize,
+                            const ScrambleParams& params) override;
+    void scheduleScrambleOff(int loopIndex, Quantize quantize) override;
+    void setScrambleWindowDuration(int loopIndex, double beats) override;
 
     // Loop selection
     void selectLoop(int idx) override;

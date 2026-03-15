@@ -7,6 +7,7 @@
 #include <string>
 #include <optional>
 #include <memory>
+#include <random>
 
 namespace retrospect {
 
@@ -52,6 +53,21 @@ struct PendingCapture {
     int64_t lookbackSamples = 0;
 };
 
+/// Parameters for scramble mode
+struct ScrambleParams {
+    double windowDuration = 1.0;   // Length of each snippet in beats
+    double fadeDuration = 0.125;   // Fade in/out duration in beats
+    bool allowRepeat = true;       // Whether the same start position can repeat
+};
+
+/// Pending scramble on/off with parameters
+struct PendingScramble {
+    int64_t executeSample = 0;
+    Quantize quantize = Quantize::Bar;
+    bool enable = true;            // true = turn on, false = turn off
+    ScrambleParams params;
+};
+
 /// All pending state for a single loop, organized by independent slots.
 /// Within each slot, only one operation can be pending (last-wins).
 struct PendingState {
@@ -63,6 +79,7 @@ struct PendingState {
     std::optional<PendingTimedOp> clear;      // ClearLoop
     std::optional<PendingCapture> capture;    // CaptureLoop
     std::optional<PendingTimedOp> record;     // Record/StopRecord
+    std::optional<PendingScramble> scramble;  // ScrambleOn/ScrambleOff
 
     /// Which mute op: Mute, Unmute, or ToggleMute
     enum class MuteOp { Mute, Unmute, Toggle } muteOp = MuteOp::Toggle;
@@ -74,7 +91,7 @@ struct PendingState {
     enum class RecordOp { Start, Stop } recordOp = RecordOp::Start;
 
     bool hasAny() const {
-        return mute || overdub || reverse || undo || speed || clear || capture || record;
+        return mute || overdub || reverse || undo || speed || clear || capture || record || scramble;
     }
 
     void clearAll() {
@@ -86,6 +103,7 @@ struct PendingState {
         clear.reset();
         capture.reset();
         record.reset();
+        scramble.reset();
     }
 };
 
@@ -154,6 +172,21 @@ public:
     void setSpeed(double speed);
     void clear();
 
+    /// Seek playback to an arbitrary sample position within the loop
+    void seek(int64_t samplePos);
+
+    /// Enable scramble mode with the given parameters
+    void scrambleOn(const ScrambleParams& params, double samplesPerBeat);
+
+    /// Disable scramble mode, resuming normal playback
+    void scrambleOff();
+
+    /// Set the window duration while scramble is active (takes effect next snippet)
+    void setScrambleWindowDuration(double beats);
+
+    /// Whether scramble mode is currently active
+    bool isScrambling() const { return scrambleActive_; }
+
     // Properties
     int64_t lengthSamples() const { return loopLength_; }
     int64_t playPosition() const;
@@ -207,6 +240,9 @@ private:
     /// Process one sample in time-stretched mode
     float processStretchedSample();
 
+    /// Process one sample in scramble mode
+    float processScrambleSample();
+
     /// Fill the stretch output buffer with another block of stretched audio
     void fillStretchBuffer();
 
@@ -240,6 +276,17 @@ private:
     // Pre-allocated work buffers (avoid allocation during processing)
     std::vector<float> stretchInputWork_;
     std::vector<float> stretchOutputWork_;
+
+    // Scramble mode state
+    bool scrambleActive_ = false;
+    ScrambleParams scrambleParams_;
+    double scrambleSamplesPerBeat_ = 0.0;
+    int64_t scrambleSnippetPos_ = 0;     // Position within current snippet
+    int64_t scrambleSnippetLen_ = 0;     // Length of current snippet in samples
+    int64_t scrambleReadStart_ = 0;      // Start read position in loop for current snippet
+    int64_t scrambleFadeSamples_ = 0;    // Fade duration in samples
+    int64_t scrambleLastStart_ = -1;     // Last chosen start (for allow_repeat=false)
+    std::mt19937 scrambleRng_{42};       // RNG for random position selection
 
     static constexpr int kStretchBlockSize = 512;
     static constexpr int kStretchBufCapacity = 8192;

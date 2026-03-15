@@ -31,7 +31,11 @@ enum class OpType {
     UndoLayer,       // Undo last overdub layer
     RedoLayer,       // Redo last undone layer
     SetSpeed,        // Change playback speed
-    ClearLoop        // Clear a loop
+    ClearLoop,       // Clear a loop
+    Seek,            // Seek/retrigger to a position
+    ScrambleOn,      // Enable scramble mode
+    ScrambleOff,     // Disable scramble mode
+    SetScrambleWindow // Change scramble window duration
 };
 
 /// Human-readable description for an OpType
@@ -62,7 +66,10 @@ enum class CommandType {
     SetSpeed,       // Change loop playback speed
     SetBpm,         // Change metronome BPM
     CancelPending,  // Cancel all pending ops
-    SetMidiSync     // Enable/disable MIDI sync (quantized)
+    SetMidiSync,    // Enable/disable MIDI sync (quantized)
+    ScrambleOn,     // Enable scramble mode on a loop
+    ScrambleOff,    // Disable scramble mode on a loop
+    SetScrambleWindow // Change scramble window duration
 };
 
 /// Command sent from TUI thread to audio thread
@@ -71,8 +78,9 @@ struct EngineCommand {
     OpType opType = OpType::Mute;       // For ScheduleOp
     int loopIndex = -1;
     Quantize quantize = Quantize::Bar;
-    double value = 0.0;                 // Speed or BPM
+    double value = 0.0;                 // Speed, BPM, seek position, or window duration
     int lookbackBars = 1;               // For CaptureLoop
+    ScrambleParams scrambleParams;      // For ScrambleOn
 };
 
 /// Central engine managing loops, ring buffer, metronome, and quantized operations.
@@ -121,6 +129,16 @@ public:
 
     /// Schedule classic record stop (quantized to boundary)
     void scheduleStopRecord(int loopIndex, Quantize quantize);
+
+    /// Schedule scramble mode on for a loop
+    void scheduleScrambleOn(int loopIndex, Quantize quantize,
+                            const ScrambleParams& params);
+
+    /// Schedule scramble mode off for a loop
+    void scheduleScrambleOff(int loopIndex, Quantize quantize);
+
+    /// Set the scramble window duration on the fly
+    void setScrambleWindowDuration(int loopIndex, double beats);
 
     /// Execute an operation immediately (no quantization)
     void executeOpNow(OpType type, int loopIndex = -1);
@@ -172,6 +190,10 @@ public:
     void setCrossfadeSamples(int samples) { crossfadeSamples_ = samples; }
 
     double sampleRate() const { return sampleRate_; }
+
+    /// Default scramble parameters (used when not overridden per command)
+    const ScrambleParams& defaultScrambleParams() const { return defaultScrambleParams_; }
+    void setDefaultScrambleParams(const ScrambleParams& p) { defaultScrambleParams_ = p; }
 
     /// Latency compensation in samples (round-trip: output + input).
     /// When set, capture and recording operations offset their read positions
@@ -287,6 +309,7 @@ private:
     int64_t latencyCompensation_ = 0;
     bool inputMonitoring_ = false;
     float liveThreshold_ = 0.0f;
+    ScrambleParams defaultScrambleParams_;
 
     EngineCallbacks callbacks_;
     std::string lastMessage_;

@@ -31,6 +31,11 @@ struct Config {
     bool midiSyncEnabled = false;
     std::string midiOutputDevice;         // "" = virtual device
 
+    // [scramble]
+    double scrambleWindowDuration = 1.0;   // Default snippet length in beats
+    double scrambleFadeDuration = 0.125;   // Default fade in/out in beats
+    bool scrambleAllowRepeat = true;       // Allow same start position consecutively
+
     // [osc]
     std::string oscPort = "7770";
 

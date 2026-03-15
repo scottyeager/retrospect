@@ -173,6 +173,27 @@ Config Config::load() {
         cfg.midiOutputDevice = *v;
     }
 
+    // [scramble]
+    if (auto v = tbl["scramble"]["window_duration"].value<double>()) {
+        if (*v >= 0.0625 && *v <= 64.0) {
+            cfg.scrambleWindowDuration = *v;
+        } else {
+            fprintf(stderr, "Warning: invalid scramble.window_duration %.4f, using default %.4f\n",
+                    *v, cfg.scrambleWindowDuration);
+        }
+    }
+    if (auto v = tbl["scramble"]["fade_duration"].value<double>()) {
+        if (*v >= 0.0 && *v <= 16.0) {
+            cfg.scrambleFadeDuration = *v;
+        } else {
+            fprintf(stderr, "Warning: invalid scramble.fade_duration %.4f, using default %.4f\n",
+                    *v, cfg.scrambleFadeDuration);
+        }
+    }
+    if (auto v = tbl["scramble"]["allow_repeat"].value<bool>()) {
+        cfg.scrambleAllowRepeat = *v;
+    }
+
     // [osc]
     // Accept port as either string or integer
     if (auto node = tbl["osc"]["port"]) {
