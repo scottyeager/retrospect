@@ -51,14 +51,18 @@ struct EngineCallbacks {
 };
 
 /// A background capture thread that reads ring buffer data and mixes channels
-/// off the audio thread. The audio thread checks for completion and swaps
-/// the finished buffer into the loop (O(1) pointer swap).
+/// off the audio thread. The audio thread checks for completion and calls
+/// loadFromCapture() with the finished buffer.
 struct BackgroundCapture {
     std::thread thread;
     std::atomic<bool> done{false};
     std::vector<float> completedAudio;
     int loopIndex = -1;
     int64_t captureLen = 0;
+    double bars = 0.0;
+    double recordedBpm = 0.0;
+    int crossfadeSamples = 256;
+    int liveCount = 0;
 };
 
 /// An in-progress classic recording (accumulating per-channel input)
@@ -314,11 +318,6 @@ private:
 
     /// Background capture threads (one per loop slot, pre-allocated)
     std::vector<std::unique_ptr<BackgroundCapture>> bgCaptures_;
-
-    /// Pre-allocated work buffer for reading first chunk on the audio thread
-    std::vector<float> captureWorkBuf_;
-
-    static constexpr int kCaptureChunkSize = 4096;
 
     /// Pending quantized MIDI sync toggle: {executeSample, enable}
     std::optional<std::pair<int64_t, bool>> pendingMidiSync_;

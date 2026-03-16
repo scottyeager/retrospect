@@ -131,18 +131,6 @@ public:
     /// This sets the loop length and creates the first layer.
     void loadFromCapture(std::vector<float> audio);
 
-    /// Initialize the loop for chunked capture. Sets up a zero-filled buffer
-    /// of the given length. Audio is filled progressively via addCaptureChunk().
-    void initForCapture(int64_t lengthSamples);
-
-    /// Accumulate a chunk of captured audio into the first layer.
-    /// Called repeatedly during chunked capture to fill in audio progressively.
-    void addCaptureChunk(const float* data, int64_t offset, int64_t count);
-
-    /// Replace the first layer's audio buffer (O(1) pointer swap).
-    /// Used to swap in a completed background capture.
-    void replaceFirstLayerAudio(std::vector<float> audio);
-
     /// Add an overdub layer. Must match the loop length.
     void addLayer(std::vector<float> audio);
 

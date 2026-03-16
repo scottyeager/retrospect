@@ -30,39 +30,6 @@ void Loop::loadFromCapture(std::vector<float> audio) {
     stretchRawPos_ = 0;
 }
 
-void Loop::initForCapture(int64_t lengthSamples) {
-    clear();
-    loopLength_ = lengthSamples;
-    layers_.push_back({std::vector<float>(static_cast<size_t>(lengthSamples), 0.0f), 1.0f, true});
-    state_ = LoopState::Playing;
-    playPos_ = 0;
-    fractionalPos_ = 0.0;
-
-    // Pre-allocate stretch resources so we don't allocate during playback
-    stretcher_ = std::make_unique<TimeStretcher>();
-    stretcher_->configure(sampleRate_);
-    stretchBuf_.resize(static_cast<size_t>(kStretchBufCapacity), 0.0f);
-    stretchInputWork_.resize(static_cast<size_t>(kMaxStretchInput), 0.0f);
-    stretchOutputWork_.resize(static_cast<size_t>(kStretchBlockSize), 0.0f);
-    stretchBufRead_ = 0;
-    stretchBufAvail_ = 0;
-    stretchRawPos_ = 0;
-}
-
-void Loop::addCaptureChunk(const float* data, int64_t offset, int64_t count) {
-    if (layers_.empty() || offset < 0 || offset + count > loopLength_) return;
-    auto& audio = layers_[0].audio;
-    for (int64_t i = 0; i < count; ++i) {
-        audio[static_cast<size_t>(offset + i)] += data[i];
-    }
-}
-
-void Loop::replaceFirstLayerAudio(std::vector<float> audio) {
-    if (!layers_.empty() && static_cast<int64_t>(audio.size()) == loopLength_) {
-        layers_[0].audio = std::move(audio);
-    }
-}
-
 void Loop::addLayer(std::vector<float> audio) {
     if (loopLength_ == 0) return;
     // Resize to match loop length
