@@ -298,7 +298,6 @@ int main(int argc, char* argv[]) {
     engine.setMetronomeClickVolume(cfg.clickVolume);
     engine.setCrossfadeSamples(cfg.crossfadeSamples);
     engine.setLookbackBars(cfg.lookbackBars);
-    engine.setMidiSyncEnabled(cfg.midiSyncEnabled);
     engine.setDefaultQuantize(quantizeFromString(cfg.defaultQuantize));
     engine.setDefaultScrambleParams({cfg.scrambleWindowDuration,
                                      cfg.scrambleFadeDuration,
@@ -331,7 +330,6 @@ int main(int argc, char* argv[]) {
             rawPtr->sendMessageNow(juce::MidiMessage(statusByte));
         });
     }
-
     // JACK transport: act as timebase master when using the JACK backend
     std::unique_ptr<retrospect::JackTransport> jackTransport;
     {
@@ -360,6 +358,14 @@ int main(int argc, char* argv[]) {
     // Create and register audio callback
     AudioCallback audioCallback(engine);
     deviceManager.addAudioCallback(&audioCallback);
+
+    // Schedule MIDI sync enable via the command queue so it executes on the
+    // audio thread (matching the TUI toggle path).  A direct setEnabled()
+    // call from the main thread would send Start before the audio device is
+    // running, and the receiving device may not be connected yet.
+    if (cfg.midiSyncEnabled) {
+        engine.scheduleMidiSync(true, retrospect::Quantize::Free);
+    }
 
     // --- Headless mode (no TUI) ---
     if (mode == RunMode::Headless) {
