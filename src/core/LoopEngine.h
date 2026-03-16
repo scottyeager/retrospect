@@ -50,19 +50,35 @@ struct EngineCallbacks {
     std::function<void(const MetronomePosition&)> onBar;
 };
 
+/// Snapshot of a channel index + ring buffer state for background reads.
+struct ChannelSnap {
+    int channelIndex;
+    RingBuffer::Snapshot snap;
+};
+
 /// A background capture thread that reads ring buffer data and mixes channels
-/// off the audio thread. The audio thread checks for completion and calls
-/// loadFromCapture() with the finished buffer.
+/// off the audio thread. Capture is two-phase:
+///   Phase 1: spawned when capture is scheduled (copies bulk of audio)
+///   Phase 2: signalled at quantize boundary (copies remaining tail)
+/// The audio thread installs the result when done.
 struct BackgroundCapture {
     std::thread thread;
     std::atomic<bool> done{false};
+    std::atomic<bool> phase2Ready{false};
+    std::atomic<bool> cancelled{false};
     std::vector<float> completedAudio;
     int loopIndex = -1;
     int64_t captureLen = 0;
+    int64_t phase1Samples = 0;
     double bars = 0.0;
     double recordedBpm = 0.0;
     int crossfadeSamples = 256;
     int liveCount = 0;
+    uint64_t activeChannelMask = 0;
+
+    // Phase 2 data (written by audio thread before setting phase2Ready)
+    std::vector<ChannelSnap> phase2Snaps;
+    int64_t phase2SamplesAgo = 0;
 };
 
 /// An in-progress classic recording (accumulating per-channel input)
@@ -283,8 +299,21 @@ private:
     /// Execute pending ops for a loop that are due at currentSample
     void flushDueOps(Loop& lp, int64_t currentSample);
 
-    /// Fulfill a capture operation (reads from ring buffer)
-    void fulfillCapture(Loop& lp, const PendingCapture& cap);
+    /// Spawn background capture thread (phase 1: copy bulk of audio).
+    /// Called from drainCommands when a capture is scheduled.
+    void beginCapture(int loopIndex, int64_t captureLen, int64_t gap);
+
+    /// Signal the background capture to grab remaining samples (phase 2).
+    /// Called from flushDueOps when the quantize boundary fires.
+    void signalCapturePhase2(int loopIndex);
+
+    /// Detect which input channels were active during a capture window.
+    /// Returns a bitmask and count of active channels.
+    struct ActiveChannels {
+        uint64_t mask = 0;
+        int count = 0;
+    };
+    ActiveChannels detectActiveChannels(int64_t captureStartSample) const;
 
     /// Start a classic recording into a loop
     void fulfillRecord(Loop& lp);
@@ -309,7 +338,7 @@ private:
     MidiSync midiSync_;
     std::vector<InputChannel> inputChannels_;
     /// Per-channel: metronome sample when the threshold was last exceeded.
-    /// Updated once per processBlock. Used by fulfillCapture to decide
+    /// Updated once per processBlock. Used by detectActiveChannels to decide
     /// channel inclusion in O(1) instead of scanning the captured segment.
     std::vector<int64_t> lastThresholdBreachSample_;
     std::vector<Loop> loops_;

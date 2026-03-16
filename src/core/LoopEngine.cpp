@@ -224,11 +224,10 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
         return;
     }
 
-    // Capture
+    // Capture — signal phase 2 of the background capture thread
     if (ps.capture && ps.capture->executeSample <= currentSample) {
-        PendingCapture cap = *ps.capture;
         ps.capture.reset();
-        fulfillCapture(lp, cap);
+        signalCapturePhase2(lp.id());
     }
 
     // Record start/stop
@@ -359,107 +358,141 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
     }
 }
 
-void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
-    int idx = lp.id();
-
-    int64_t lookback = cap.lookbackSamples;
-    if (lookback <= 0) {
-        lookback = static_cast<int64_t>(
-            std::round(static_cast<double>(lookbackBars_) * metronome_.samplesPerBar()));
-    }
-
-    // Clamp to the minimum available across all input channels
-    for (auto& ch : inputChannels_) {
-        lookback = std::min(lookback, ch.ringBuffer().available());
-    }
-    if (lookback <= 0) {
-        lastMessage_ = "No audio to capture";
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        return;
-    }
-
-    int64_t captureLen = lookback;
-
-    // Determine which channels to include. A channel is included if it
-    // exceeded the live threshold at any point during the capture window
-    // (checked via lastThresholdBreachSample_, an O(1) lookup updated
-    // each processBlock).
-    int64_t samplesAgo = captureLen + latencyCompensation_;
-    int64_t currentSample = metronome_.position().totalSamples;
-    int64_t captureStartSample = currentSample - samplesAgo;
-    uint64_t activeChannelMask = 0;
-    int liveCount = 0;
+LoopEngine::ActiveChannels LoopEngine::detectActiveChannels(int64_t captureStartSample) const {
+    ActiveChannels result;
     int engineChannels = static_cast<int>(inputChannels_.size());
     for (int chIdx = 0; chIdx < engineChannels && chIdx < 64; ++chIdx) {
         bool hadActivity = (liveThreshold_ <= 0.0f) ||
             (lastThresholdBreachSample_[static_cast<size_t>(chIdx)] >= captureStartSample);
-
         if (hadActivity) {
-            activeChannelMask |= (uint64_t(1) << chIdx);
-            ++liveCount;
+            result.mask |= (uint64_t(1) << chIdx);
+            ++result.count;
         }
     }
+    return result;
+}
 
-    if (liveCount == 0) {
+void LoopEngine::beginCapture(int loopIndex, int64_t captureLen, int64_t gap) {
+    // Determine which channels to include
+    int64_t currentSample = metronome_.position().totalSamples;
+    int64_t captureStartSample = currentSample - (captureLen - gap) - latencyCompensation_;
+    auto active = detectActiveChannels(captureStartSample);
+
+    if (active.count == 0) {
         lastMessage_ = "No live input channels to capture";
         if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
         return;
     }
 
-    // Cancel any existing background capture for this loop
-    cancelBackgroundCapture(idx);
+    cancelBackgroundCapture(loopIndex);
 
-    // Snapshot each active channel's ring buffer state for thread-safe reads
-    struct ChannelSnap {
-        int channelIndex;
-        RingBuffer::Snapshot snap;
-    };
+    // Phase 1 reads everything already in the ring buffer.
+    // The total capture covers captureLen samples ending at the execution
+    // boundary, but the execution boundary is `gap` samples in the future.
+    // So right now, (captureLen - gap) samples are available.
+    int64_t phase1Samples = captureLen - gap;
+    int64_t phase1SamplesAgo = phase1Samples + latencyCompensation_;
+
+    // Snapshot each active channel's ring buffer state
+    int engineChannels = static_cast<int>(inputChannels_.size());
     std::vector<ChannelSnap> snaps;
     for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
-        if (!(activeChannelMask & (uint64_t(1) << ch))) continue;
+        if (!(active.mask & (uint64_t(1) << ch))) continue;
         snaps.push_back({ch, inputChannels_[static_cast<size_t>(ch)].ringBuffer().snapshot()});
     }
 
-    // Spawn background thread to allocate the buffer and read+mix from
-    // ring buffers. The audio thread installs the result on completion.
     auto bg = std::make_unique<BackgroundCapture>();
-    bg->loopIndex = idx;
+    bg->loopIndex = loopIndex;
     bg->captureLen = captureLen;
-    bg->bars = static_cast<double>(lookback) / metronome_.samplesPerBar();
+    bg->phase1Samples = phase1Samples;
+    bg->bars = static_cast<double>(captureLen) / metronome_.samplesPerBar();
     bg->recordedBpm = metronome_.bpm();
     bg->crossfadeSamples = crossfadeSamples_;
-    bg->liveCount = liveCount;
+    bg->liveCount = active.count;
+    bg->activeChannelMask = active.mask;
 
     auto* channelsPtr = inputChannels_.data();
-    auto* doneFlag = &bg->done;
-    auto* resultBuf = &bg->completedAudio;
+    auto* bgPtr = bg.get();
 
     bg->thread = std::thread([channelsPtr, snaps = std::move(snaps),
-                              samplesAgo, captureLen, doneFlag, resultBuf] {
-        int numSamples = static_cast<int>(captureLen);
-        std::vector<float> audio(static_cast<size_t>(numSamples), 0.0f);
-        std::vector<float> chBuf(static_cast<size_t>(numSamples));
+                              phase1Samples, phase1SamplesAgo, bgPtr] {
+        int64_t totalLen = bgPtr->captureLen;
+        int numPhase1 = static_cast<int>(phase1Samples);
+        std::vector<float> audio(static_cast<size_t>(totalLen), 0.0f);
+        std::vector<float> chBuf(static_cast<size_t>(totalLen));
 
-        for (const auto& cs : snaps) {
-            channelsPtr[static_cast<size_t>(cs.channelIndex)].ringBuffer()
-                .readFromSnapshot(chBuf.data(), numSamples, samplesAgo, cs.snap);
-            for (size_t j = 0; j < audio.size(); ++j) {
-                audio[j] += chBuf[j];
+        // Phase 1: copy the bulk of the audio that's already in the ring buffer
+        if (numPhase1 > 0) {
+            for (const auto& cs : snaps) {
+                channelsPtr[static_cast<size_t>(cs.channelIndex)].ringBuffer()
+                    .readFromSnapshot(chBuf.data(), numPhase1, phase1SamplesAgo, cs.snap);
+                for (int j = 0; j < numPhase1; ++j) {
+                    audio[static_cast<size_t>(j)] += chBuf[static_cast<size_t>(j)];
+                }
             }
         }
 
-        *resultBuf = std::move(audio);
-        doneFlag->store(true, std::memory_order_release);
+        // Phase 2: wait for the audio thread to signal remaining samples
+        int64_t remaining = totalLen - phase1Samples;
+        if (remaining > 0) {
+            while (!bgPtr->phase2Ready.load(std::memory_order_acquire)) {
+                if (bgPtr->cancelled.load(std::memory_order_acquire)) {
+                    bgPtr->done.store(true, std::memory_order_release);
+                    return;
+                }
+                std::this_thread::yield();
+            }
+
+            if (bgPtr->cancelled.load(std::memory_order_acquire)) {
+                bgPtr->done.store(true, std::memory_order_release);
+                return;
+            }
+
+            int numPhase2 = static_cast<int>(remaining);
+            for (const auto& cs : bgPtr->phase2Snaps) {
+                channelsPtr[static_cast<size_t>(cs.channelIndex)].ringBuffer()
+                    .readFromSnapshot(chBuf.data(), numPhase2,
+                                     bgPtr->phase2SamplesAgo, cs.snap);
+                for (int j = 0; j < numPhase2; ++j) {
+                    audio[static_cast<size_t>(phase1Samples + j)] +=
+                        chBuf[static_cast<size_t>(j)];
+                }
+            }
+        }
+
+        bgPtr->completedAudio = std::move(audio);
+        bgPtr->done.store(true, std::memory_order_release);
     });
 
     double bars = bg->bars;
-    bgCaptures_[static_cast<size_t>(idx)] = std::move(bg);
+    int liveCount = active.count;
+    bgCaptures_[static_cast<size_t>(loopIndex)] = std::move(bg);
 
     std::ostringstream msg;
-    msg << "Loop " << idx << " capturing (" << static_cast<int>(std::round(bars))
+    msg << "Loop " << loopIndex << " capturing (" << static_cast<int>(std::round(bars))
         << " bars, " << liveCount << " ch)";
     lastMessage_ = msg.str();
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+}
+
+void LoopEngine::signalCapturePhase2(int loopIndex) {
+    auto& bg = bgCaptures_[static_cast<size_t>(loopIndex)];
+    if (!bg || bg->done.load(std::memory_order_acquire)) return;
+
+    int64_t remaining = bg->captureLen - bg->phase1Samples;
+    int64_t samplesAgo = remaining + latencyCompensation_;
+
+    // Snapshot the same channels that phase 1 used
+    int engineChannels = static_cast<int>(inputChannels_.size());
+    bg->phase2Snaps.clear();
+    for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+        if (!(bg->activeChannelMask & (uint64_t(1) << ch))) continue;
+        bg->phase2Snaps.push_back(
+            {ch, inputChannels_[static_cast<size_t>(ch)].ringBuffer().snapshot()});
+    }
+    bg->phase2SamplesAgo = samplesAgo;
+
+    bg->phase2Ready.store(true, std::memory_order_release);
 }
 
 void LoopEngine::checkBackgroundCaptures() {
@@ -495,8 +528,10 @@ void LoopEngine::cancelBackgroundCapture(int loopIndex) {
     auto& bg = bgCaptures_[static_cast<size_t>(loopIndex)];
     if (!bg) return;
 
-    // The thread runs to completion quickly (just memcpy + accumulation).
-    // Join it to ensure clean shutdown before reusing the loop slot.
+    // Signal the thread to stop spinning and exit
+    bg->cancelled.store(true, std::memory_order_release);
+    bg->phase2Ready.store(true, std::memory_order_release);
+
     if (bg->thread.joinable()) {
         bg->thread.join();
     }
@@ -917,9 +952,20 @@ void LoopEngine::drainCommands() {
             }
             case CommandType::CaptureLoop: {
                 int64_t execSample = computeExecuteSample(cmd.quantize);
+                int64_t currentSample = metronome_.position().totalSamples;
+                int64_t gap = execSample - currentSample;
                 int64_t lookbackSamples = static_cast<int64_t>(
                     std::round(static_cast<double>(cmd.lookbackBars) *
                                metronome_.samplesPerBar()));
+                // Clamp to minimum available across all input channels
+                for (auto& ch : inputChannels_) {
+                    lookbackSamples = std::min(lookbackSamples, ch.ringBuffer().available());
+                }
+                if (lookbackSamples <= 0) {
+                    lastMessage_ = "No audio to capture";
+                    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+                    break;
+                }
                 forEachTarget(cmd.loopIndex, [&](int idx) {
                     auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
                     PendingCapture cap;
@@ -927,6 +973,8 @@ void LoopEngine::drainCommands() {
                     cap.quantize = cmd.quantize;
                     cap.lookbackSamples = lookbackSamples;
                     ps.capture = cap;
+                    // Spawn phase 1 immediately to start copying bulk audio
+                    beginCapture(idx, lookbackSamples, gap);
                 });
                 break;
             }
