@@ -29,6 +29,24 @@ public:
     /// Captures the most recent `numSamples` samples.
     std::vector<float> capture(int numSamples) const;
 
+    /// Snapshot of ring buffer state for background-thread reads.
+    /// Captured on the audio thread, used by background threads to call
+    /// readFromSnapshot() without racing on writePos_/totalWritten_.
+    struct Snapshot {
+        int64_t writePos;
+        int64_t totalWritten;
+        int64_t capacity;
+    };
+
+    /// Capture current state for background-thread use
+    Snapshot snapshot() const { return {writePos_, totalWritten_, capacity()}; }
+
+    /// Read using a previously captured snapshot instead of live state.
+    /// Safe to call from a background thread while the audio thread writes,
+    /// provided the read region is far behind the live write head.
+    void readFromSnapshot(float* dest, int numSamples, int64_t samplesAgo,
+                          const Snapshot& snap) const;
+
     /// Total samples written since creation/reset
     int64_t totalWritten() const { return totalWritten_; }
 

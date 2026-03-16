@@ -74,6 +74,36 @@ void RingBuffer::readFromPast(float* dest, int numSamples, int64_t samplesAgo) c
     }
 }
 
+void RingBuffer::readFromSnapshot(float* dest, int numSamples, int64_t samplesAgo,
+                                   const Snapshot& snap) const {
+    if (numSamples <= 0) return;
+
+    int64_t cap = snap.capacity;
+    int64_t avail = std::min(snap.totalWritten, cap);
+
+    if (samplesAgo > avail) samplesAgo = avail;
+    if (numSamples > samplesAgo) {
+        int64_t zeroCount = numSamples - samplesAgo;
+        std::memset(dest, 0, static_cast<size_t>(zeroCount) * sizeof(float));
+        dest += zeroCount;
+        numSamples = static_cast<int>(samplesAgo);
+    }
+
+    int64_t readStart = (snap.writePos - samplesAgo + cap * 2) % cap;
+
+    int64_t spaceToEnd = cap - readStart;
+    if (numSamples <= spaceToEnd) {
+        std::memcpy(dest, buffer_.data() + readStart,
+                    static_cast<size_t>(numSamples) * sizeof(float));
+    } else {
+        std::memcpy(dest, buffer_.data() + readStart,
+                    static_cast<size_t>(spaceToEnd) * sizeof(float));
+        int64_t remaining = numSamples - spaceToEnd;
+        std::memcpy(dest + spaceToEnd, buffer_.data(),
+                    static_cast<size_t>(remaining) * sizeof(float));
+    }
+}
+
 std::vector<float> RingBuffer::capture(int numSamples) const {
     std::vector<float> result(static_cast<size_t>(numSamples), 0.0f);
     readMostRecent(result.data(), numSamples);

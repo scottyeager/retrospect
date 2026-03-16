@@ -66,6 +66,9 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
         loops_[static_cast<size_t>(i)].setSampleRate(sampleRate);
     }
 
+    bgCaptures_.resize(static_cast<size_t>(maxLoops));
+    captureWorkBuf_.resize(static_cast<size_t>(kCaptureChunkSize));
+
     // Wire metronome callbacks
     metronome_.onBeat([this](const MetronomePosition& pos) {
         click_.trigger(pos.beat == 0);
@@ -74,6 +77,14 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
     metronome_.onBar([this](const MetronomePosition& pos) {
         if (callbacks_.onBar) callbacks_.onBar(pos);
     });
+}
+
+LoopEngine::~LoopEngine() {
+    for (auto& bg : bgCaptures_) {
+        if (bg && bg->thread.joinable()) {
+            bg->thread.join();
+        }
+    }
 }
 
 void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
@@ -172,6 +183,9 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
         midiSync_.advance(1);
     }
 
+    // Check for completed background captures and swap results into loops
+    checkBackgroundCaptures();
+
     // Update live channel bitmask and threshold breach timestamps
     {
         int64_t currentSample = metronome_.position().totalSamples;
@@ -202,6 +216,7 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
 
     // Clear — if due, execute and cancel everything else
     if (ps.clear && ps.clear->executeSample <= currentSample) {
+        cancelBackgroundCapture(lp.id());
         lp.clear();
         lastMessage_ = "Loop " + std::to_string(lp.id()) + " cleared";
         if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
@@ -364,33 +379,24 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
         return;
     }
 
-    int captureLen = static_cast<int>(lookback);
+    int64_t captureLen = lookback;
 
-    // Capture from each input channel and mix down to mono.
-    // A channel is included if it exceeded the live threshold at any point
-    // during the capture window (checked via lastThresholdBreachSample_,
-    // an O(1) lookup updated each processBlock). This avoids scanning the
-    // entire captured segment and ensures the full channel audio is included
-    // whenever the channel had activity during the lookback period.
-    // Apply latency compensation: read from further back in the ring buffer
-    // to align captured audio with the metronome's internal timeline.
-    int64_t samplesAgo = static_cast<int64_t>(captureLen) + latencyCompensation_;
+    // Determine which channels to include. A channel is included if it
+    // exceeded the live threshold at any point during the capture window
+    // (checked via lastThresholdBreachSample_, an O(1) lookup updated
+    // each processBlock).
+    int64_t samplesAgo = captureLen + latencyCompensation_;
     int64_t currentSample = metronome_.position().totalSamples;
     int64_t captureStartSample = currentSample - samplesAgo;
-    std::vector<float> audio(static_cast<size_t>(captureLen), 0.0f);
+    uint64_t activeChannelMask = 0;
     int liveCount = 0;
     int engineChannels = static_cast<int>(inputChannels_.size());
-    for (int chIdx = 0; chIdx < engineChannels; ++chIdx) {
+    for (int chIdx = 0; chIdx < engineChannels && chIdx < 64; ++chIdx) {
         bool hadActivity = (liveThreshold_ <= 0.0f) ||
             (lastThresholdBreachSample_[static_cast<size_t>(chIdx)] >= captureStartSample);
 
         if (hadActivity) {
-            std::vector<float> chAudio(static_cast<size_t>(captureLen), 0.0f);
-            inputChannels_[static_cast<size_t>(chIdx)].ringBuffer()
-                .readFromPast(chAudio.data(), captureLen, samplesAgo);
-            for (size_t j = 0; j < audio.size(); ++j) {
-                audio[j] += chAudio[j];
-            }
+            activeChannelMask |= (uint64_t(1) << chIdx);
             ++liveCount;
         }
     }
@@ -401,15 +407,73 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
         return;
     }
 
-    lp.loadFromCapture(std::move(audio));
+    // Cancel any existing background capture for this loop
+    cancelBackgroundCapture(idx);
+
+    // Initialize loop with zero-filled buffer (playback starts immediately)
+    lp.initForCapture(captureLen);
     lp.setCrossfadeSamples(crossfadeSamples_);
 
     double bars = static_cast<double>(lookback) / metronome_.samplesPerBar();
     lp.setLengthInBars(bars);
-
-    // Record the BPM at capture time for time stretching
     lp.setRecordedBpm(metronome_.bpm());
     lp.setCurrentBpm(metronome_.bpm());
+
+    // Copy first chunk immediately so playback has audio from the start.
+    // This is a small fixed cost (~16KB per channel) well within deadline.
+    int64_t firstChunk = std::min(captureLen, static_cast<int64_t>(kCaptureChunkSize));
+    for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+        if (!(activeChannelMask & (uint64_t(1) << ch))) continue;
+        inputChannels_[static_cast<size_t>(ch)].ringBuffer()
+            .readFromPast(captureWorkBuf_.data(), static_cast<int>(firstChunk), samplesAgo);
+        lp.addCaptureChunk(captureWorkBuf_.data(), 0, firstChunk);
+    }
+
+    // Spawn background thread to read+mix remaining data from ring buffers.
+    // The thread writes to its own buffer, then signals completion.
+    // The audio thread swaps the result into the loop (O(1) pointer swap).
+    if (captureLen > firstChunk) {
+        // Snapshot each active channel's ring buffer state for thread-safe reads
+        struct ChannelSnap {
+            int channelIndex;
+            RingBuffer::Snapshot snap;
+        };
+        std::vector<ChannelSnap> snaps;
+        for (int ch = 0; ch < engineChannels && ch < 64; ++ch) {
+            if (!(activeChannelMask & (uint64_t(1) << ch))) continue;
+            snaps.push_back({ch, inputChannels_[static_cast<size_t>(ch)].ringBuffer().snapshot()});
+        }
+
+        auto bg = std::make_unique<BackgroundCapture>();
+        bg->loopIndex = idx;
+        bg->captureLen = captureLen;
+
+        // Raw pointers to ring buffer objects — safe because LoopEngine
+        // (which owns them) outlives the background thread.
+        auto* channelsPtr = inputChannels_.data();
+        auto* doneFlag = &bg->done;
+        auto* resultBuf = &bg->completedAudio;
+
+        bg->thread = std::thread([channelsPtr, snaps = std::move(snaps),
+                                  samplesAgo, captureLen, doneFlag, resultBuf] {
+            int numSamples = static_cast<int>(captureLen);
+            std::vector<float> audio(static_cast<size_t>(numSamples), 0.0f);
+            std::vector<float> chBuf(static_cast<size_t>(numSamples));
+
+            for (const auto& cs : snaps) {
+                channelsPtr[static_cast<size_t>(cs.channelIndex)].ringBuffer()
+                    .readFromSnapshot(chBuf.data(), numSamples, samplesAgo, cs.snap);
+                for (size_t j = 0; j < audio.size(); ++j) {
+                    audio[j] += chBuf[j];
+                }
+            }
+
+            *resultBuf = std::move(audio);
+            doneFlag->store(true, std::memory_order_release);
+        });
+
+        bgCaptures_[static_cast<size_t>(idx)] = std::move(bg);
+    }
 
     std::ostringstream msg;
     msg << "Loop " << idx << " captured (" << static_cast<int>(std::round(bars))
@@ -417,6 +481,34 @@ void LoopEngine::fulfillCapture(Loop& lp, const PendingCapture& cap) {
     lastMessage_ = msg.str();
     if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
     if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+}
+
+void LoopEngine::checkBackgroundCaptures() {
+    for (auto& bg : bgCaptures_) {
+        if (!bg || !bg->done.load(std::memory_order_acquire)) continue;
+
+        auto& lp = loops_[static_cast<size_t>(bg->loopIndex)];
+
+        // Swap in completed audio if the loop still matches
+        if (!lp.isEmpty() && lp.lengthSamples() == bg->captureLen) {
+            lp.replaceFirstLayerAudio(std::move(bg->completedAudio));
+        }
+
+        bg->thread.join();
+        bg.reset();
+    }
+}
+
+void LoopEngine::cancelBackgroundCapture(int loopIndex) {
+    auto& bg = bgCaptures_[static_cast<size_t>(loopIndex)];
+    if (!bg) return;
+
+    // The thread runs to completion quickly (just memcpy + accumulation).
+    // Join it to ensure clean shutdown before reusing the loop slot.
+    if (bg->thread.joinable()) {
+        bg->thread.join();
+    }
+    bg.reset();
 }
 
 void LoopEngine::fulfillRecord(Loop& lp) {

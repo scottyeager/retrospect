@@ -14,6 +14,7 @@
 #include <optional>
 #include <atomic>
 #include <mutex>
+#include <thread>
 
 namespace retrospect {
 
@@ -47,6 +48,17 @@ struct EngineCallbacks {
     std::function<void(const std::string&)> onMessage;
     std::function<void(const MetronomePosition&)> onBeat;
     std::function<void(const MetronomePosition&)> onBar;
+};
+
+/// A background capture thread that reads ring buffer data and mixes channels
+/// off the audio thread. The audio thread checks for completion and swaps
+/// the finished buffer into the loop (O(1) pointer swap).
+struct BackgroundCapture {
+    std::thread thread;
+    std::atomic<bool> done{false};
+    std::vector<float> completedAudio;
+    int loopIndex = -1;
+    int64_t captureLen = 0;
 };
 
 /// An in-progress classic recording (accumulating per-channel input)
@@ -102,6 +114,7 @@ public:
                double sampleRate = 44100.0, double minBpm = 60.0,
                int numInputChannels = 1, float liveThreshold = 0.0f,
                int liveWindowMs = 500);
+    ~LoopEngine();
 
     /// Process a block of multi-channel audio.
     /// @param input Array of per-channel input buffers (may be nullptr for missing channels)
@@ -275,6 +288,12 @@ private:
     /// Stop a classic recording
     void fulfillStopRecord(Loop& lp);
 
+    /// Check for completed background captures and swap results into loops
+    void checkBackgroundCaptures();
+
+    /// Cancel and join any background capture for the given loop index
+    void cancelBackgroundCapture(int loopIndex);
+
     /// Drain commands from the SPSC queue into loop pending state (audio thread)
     void drainCommands();
 
@@ -292,6 +311,14 @@ private:
     std::vector<Loop> loops_;
 
     std::optional<ActiveRecording> activeRecording_;
+
+    /// Background capture threads (one per loop slot, pre-allocated)
+    std::vector<std::unique_ptr<BackgroundCapture>> bgCaptures_;
+
+    /// Pre-allocated work buffer for reading first chunk on the audio thread
+    std::vector<float> captureWorkBuf_;
+
+    static constexpr int kCaptureChunkSize = 4096;
 
     /// Pending quantized MIDI sync toggle: {executeSample, enable}
     std::optional<std::pair<int64_t, bool>> pendingMidiSync_;
