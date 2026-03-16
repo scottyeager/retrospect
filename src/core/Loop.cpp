@@ -1,5 +1,5 @@
 #include "core/Loop.h"
-#include "core/TimeStretcher.h"
+#include "core/StretchWorker.h"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -7,9 +7,74 @@
 namespace retrospect {
 
 Loop::Loop() = default;
-Loop::~Loop() = default;
-Loop::Loop(Loop&&) noexcept = default;
-Loop& Loop::operator=(Loop&&) noexcept = default;
+Loop::~Loop() {
+    stopStretchWorker();
+}
+
+Loop::Loop(Loop&& other) noexcept
+    : layers_(std::move(other.layers_))
+    , state_(other.state_)
+    , loopLength_(other.loopLength_)
+    , playPos_(other.playPos_)
+    , reversed_(other.reversed_.load(std::memory_order_relaxed))
+    , speed_(other.speed_)
+    , fractionalPos_(other.fractionalPos_)
+    , crossfadeSamples_(other.crossfadeSamples_)
+    , lengthInBars_(other.lengthInBars_)
+    , id_(other.id_)
+    , pending_(std::move(other.pending_))
+    , recordedBpm_(other.recordedBpm_)
+    , currentBpm_(other.currentBpm_)
+    , sampleRate_(other.sampleRate_)
+    , stretchWorker_(std::move(other.stretchWorker_))
+    , stretchRawPos_(other.stretchRawPos_.load(std::memory_order_relaxed))
+    , scrambleActive_(other.scrambleActive_)
+    , scrambleParams_(other.scrambleParams_)
+    , scrambleSamplesPerBeat_(other.scrambleSamplesPerBeat_)
+    , scrambleSnippetPos_(other.scrambleSnippetPos_)
+    , scrambleSnippetLen_(other.scrambleSnippetLen_)
+    , scrambleReadStart_(other.scrambleReadStart_)
+    , scrambleFadeSamples_(other.scrambleFadeSamples_)
+    , scrambleLastStart_(other.scrambleLastStart_)
+    , scrambleRng_(other.scrambleRng_)
+{
+    other.state_ = LoopState::Empty;
+    other.loopLength_ = 0;
+}
+
+Loop& Loop::operator=(Loop&& other) noexcept {
+    if (this != &other) {
+        stopStretchWorker();
+        layers_ = std::move(other.layers_);
+        state_ = other.state_;
+        loopLength_ = other.loopLength_;
+        playPos_ = other.playPos_;
+        reversed_.store(other.reversed_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        speed_ = other.speed_;
+        fractionalPos_ = other.fractionalPos_;
+        crossfadeSamples_ = other.crossfadeSamples_;
+        lengthInBars_ = other.lengthInBars_;
+        id_ = other.id_;
+        pending_ = std::move(other.pending_);
+        recordedBpm_ = other.recordedBpm_;
+        currentBpm_ = other.currentBpm_;
+        sampleRate_ = other.sampleRate_;
+        stretchWorker_ = std::move(other.stretchWorker_);
+        stretchRawPos_.store(other.stretchRawPos_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        scrambleActive_ = other.scrambleActive_;
+        scrambleParams_ = other.scrambleParams_;
+        scrambleSamplesPerBeat_ = other.scrambleSamplesPerBeat_;
+        scrambleSnippetPos_ = other.scrambleSnippetPos_;
+        scrambleSnippetLen_ = other.scrambleSnippetLen_;
+        scrambleReadStart_ = other.scrambleReadStart_;
+        scrambleFadeSamples_ = other.scrambleFadeSamples_;
+        scrambleLastStart_ = other.scrambleLastStart_;
+        scrambleRng_ = other.scrambleRng_;
+        other.state_ = LoopState::Empty;
+        other.loopLength_ = 0;
+    }
+    return *this;
+}
 
 void Loop::loadFromCapture(std::vector<float> audio) {
     clear();
@@ -18,16 +83,7 @@ void Loop::loadFromCapture(std::vector<float> audio) {
     state_ = LoopState::Playing;
     playPos_ = 0;
     fractionalPos_ = 0.0;
-
-    // Pre-allocate stretch resources so we don't allocate during playback
-    stretcher_ = std::make_unique<TimeStretcher>();
-    stretcher_->configure(sampleRate_);
-    stretchBuf_.resize(static_cast<size_t>(kStretchBufCapacity), 0.0f);
-    stretchInputWork_.resize(static_cast<size_t>(kMaxStretchInput), 0.0f);
-    stretchOutputWork_.resize(static_cast<size_t>(kStretchBlockSize), 0.0f);
-    stretchBufRead_ = 0;
-    stretchBufAvail_ = 0;
-    stretchRawPos_ = 0;
+    stretchRawPos_.store(0, std::memory_order_relaxed);
 }
 
 void Loop::addLayer(std::vector<float> audio) {
@@ -103,7 +159,7 @@ float Loop::processSample() {
 
 float Loop::processDirectSample() {
     int64_t readPos;
-    if (reversed_) {
+    if (reversed_.load(std::memory_order_relaxed)) {
         readPos = loopLength_ - 1 - playPos_;
     } else {
         readPos = playPos_;
@@ -121,67 +177,90 @@ float Loop::processDirectSample() {
 }
 
 float Loop::processStretchedSample() {
-    // Ensure we have enough stretched samples in the buffer.
-    // At max speed (4x), we consume up to 4 samples per call.
-    int needed = static_cast<int>(std::ceil(speed_)) + 1;
-    while (stretchBufAvail_ < needed) {
-        fillStretchBuffer();
+    if (!stretchWorker_ || !stretchWorker_->isRunning()) {
+        startStretchWorker();
+        if (!stretchWorker_) return 0.0f;
     }
 
-    // Read from stretch buffer
-    float sample = stretchBuf_[static_cast<size_t>(stretchBufRead_)];
+    // Update tempo ratio for the worker
+    double tempoRatio = std::clamp(currentBpm_ / recordedBpm_, 0.25, 4.0);
+    stretchWorker_->setTempoRatio(tempoRatio);
 
-    // Advance through stretch buffer at the user's speed_ rate.
-    // This is where speed_ affects both speed and pitch (on top of stretching).
+    // Read from the worker's lock-free buffer
+    int avail = stretchWorker_->available();
+    int needed = static_cast<int>(std::ceil(speed_)) + 1;
+
+    if (avail < needed) {
+        // Buffer underrun — worker hasn't produced enough yet.
+        // Signal it and output the last available sample or silence.
+        stretchWorker_->requestMore();
+        if (avail == 0) return 0.0f;
+    }
+
+    float sample = stretchWorker_->readSample();
+
+    // Advance through stretch buffer at the user's speed_ rate
     fractionalPos_ += speed_;
     int advance = static_cast<int>(fractionalPos_);
     fractionalPos_ -= static_cast<double>(advance);
 
-    stretchBufRead_ = (stretchBufRead_ + advance) % kStretchBufCapacity;
-    stretchBufAvail_ -= advance;
+    // Skip additional samples if speed > 1
+    for (int i = 1; i < advance; ++i) {
+        if (stretchWorker_->available() > 0) {
+            stretchWorker_->readSample();
+        }
+    }
+
+    // Signal worker if buffer is getting low
+    if (stretchWorker_->available() < StretchWorker::kFillThreshold) {
+        stretchWorker_->requestMore();
+    }
 
     // Update playPos_ for display purposes (approximate raw loop position)
-    playPos_ = stretchRawPos_ % loopLength_;
+    playPos_ = stretchRawPos_.load(std::memory_order_relaxed) % loopLength_;
 
     return sample;
 }
 
-void Loop::fillStretchBuffer() {
-    if (!stretcher_ || !stretcher_->isConfigured()) return;
-    if (recordedBpm_ <= 0.0 || currentBpm_ <= 0.0) return;
+void Loop::startStretchWorker() {
+    if (stretchWorker_ && stretchWorker_->isRunning()) return;
+    if (loopLength_ <= 0) return;
 
-    // Tempo ratio: >1.0 means current tempo is faster, need more input per output
-    double tempoRatio = std::clamp(currentBpm_ / recordedBpm_, 0.25, 4.0);
+    stretchWorker_ = std::make_unique<StretchWorker>();
 
-    // How many raw input samples we need to produce kStretchBlockSize output samples
-    int inputNeeded = static_cast<int>(std::ceil(kStretchBlockSize * tempoRatio));
-    inputNeeded = std::clamp(inputNeeded, 1, kMaxStretchInput);
+    // Capture state needed by the feed callback. The callback runs on the
+    // worker thread and reads loop layer data (benign race — layer audio is
+    // immutable after creation, active flag toggles cause at most one brief
+    // stretch block of slightly stale mix).
+    auto* self = this;
+    auto feedCb = [self](float* output, int count) {
+        int64_t rawPos = self->stretchRawPos_.load(std::memory_order_relaxed);
+        bool rev = self->reversed_.load(std::memory_order_relaxed);
+        int64_t len = self->loopLength_;
 
-    // Read raw samples from loop layers into pre-allocated work buffer
-    for (int i = 0; i < inputNeeded; ++i) {
-        int64_t pos;
-        if (reversed_) {
-            // When reversed, read backwards through the loop
-            int64_t rawMod = stretchRawPos_ % loopLength_;
-            pos = loopLength_ - 1 - rawMod;
-        } else {
-            pos = stretchRawPos_ % loopLength_;
+        for (int i = 0; i < count; ++i) {
+            int64_t pos;
+            if (rev) {
+                int64_t rawMod = rawPos % len;
+                pos = len - 1 - rawMod;
+            } else {
+                pos = rawPos % len;
+            }
+            output[i] = self->getMixedSample(pos) * self->crossfadeGain(pos);
+            rawPos = (rawPos + 1) % len;
         }
-        stretchInputWork_[static_cast<size_t>(i)] =
-            getMixedSample(pos) * crossfadeGain(pos);
-        stretchRawPos_ = (stretchRawPos_ + 1) % loopLength_;
-    }
 
-    // Process through stretcher (no allocation)
-    stretcher_->process(stretchInputWork_.data(), inputNeeded,
-                        stretchOutputWork_.data(), kStretchBlockSize);
+        self->stretchRawPos_.store(rawPos, std::memory_order_relaxed);
+    };
 
-    // Write to circular output buffer
-    for (int i = 0; i < kStretchBlockSize; ++i) {
-        int writeIdx = (stretchBufRead_ + stretchBufAvail_ + i) % kStretchBufCapacity;
-        stretchBuf_[static_cast<size_t>(writeIdx)] = stretchOutputWork_[static_cast<size_t>(i)];
+    stretchWorker_->start(sampleRate_, std::move(feedCb));
+}
+
+void Loop::stopStretchWorker() {
+    if (stretchWorker_) {
+        stretchWorker_->stop();
+        stretchWorker_.reset();
     }
-    stretchBufAvail_ += kStretchBlockSize;
 }
 
 float Loop::processScrambleSample() {
@@ -246,12 +325,11 @@ void Loop::seek(int64_t samplePos) {
     playPos_ = ((samplePos % loopLength_) + loopLength_) % loopLength_;
     fractionalPos_ = 0.0;
 
-    // Reset stretch buffer if active
-    if (isTimeStretchActive()) {
-        stretchRawPos_ = playPos_;
-        stretchBufRead_ = 0;
-        stretchBufAvail_ = 0;
-        if (stretcher_) stretcher_->reset();
+    // Reset stretch worker if active
+    if (isTimeStretchActive() && stretchWorker_) {
+        stretchRawPos_.store(playPos_, std::memory_order_relaxed);
+        stopStretchWorker();
+        // Will be restarted on next processStretchedSample()
     }
 }
 
@@ -285,13 +363,14 @@ void Loop::recordSample(float input) {
 
     auto& recordLayer = layers_.back();
     int64_t pos;
+    bool rev = reversed_.load(std::memory_order_relaxed);
     if (isTimeStretchActive()) {
         // During overdub with stretching, record at the raw position the
         // stretcher is consuming from, so the overdub aligns with the raw loop data
-        int64_t rawMod = stretchRawPos_ % loopLength_;
-        pos = reversed_ ? (loopLength_ - 1 - rawMod) : rawMod;
+        int64_t rawMod = stretchRawPos_.load(std::memory_order_relaxed) % loopLength_;
+        pos = rev ? (loopLength_ - 1 - rawMod) : rawMod;
     } else {
-        pos = reversed_ ? (loopLength_ - 1 - playPos_) : playPos_;
+        pos = rev ? (loopLength_ - 1 - playPos_) : playPos_;
     }
     if (pos >= 0 && pos < loopLength_) {
         recordLayer.audio[static_cast<size_t>(pos)] += input;
@@ -333,7 +412,7 @@ void Loop::stopOverdub() {
 }
 
 void Loop::toggleReverse() {
-    reversed_ = !reversed_;
+    reversed_.store(!reversed_.load(std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
 void Loop::setSpeed(double spd) {
@@ -347,16 +426,16 @@ void Loop::setCurrentBpm(double bpm) {
 
     if (!wasActive && nowActive) {
         // Transitioning from direct to stretched mode
-        stretchRawPos_ = playPos_;
-        stretchBufRead_ = 0;
-        stretchBufAvail_ = 0;
+        stretchRawPos_.store(playPos_, std::memory_order_relaxed);
         fractionalPos_ = 0.0;
-        if (stretcher_) stretcher_->reset();
+        // Worker will be started lazily on first processStretchedSample()
     } else if (wasActive && !nowActive) {
         // Transitioning back to direct mode
-        playPos_ = stretchRawPos_ % loopLength_;
+        playPos_ = stretchRawPos_.load(std::memory_order_relaxed) % loopLength_;
         fractionalPos_ = 0.0;
+        stopStretchWorker();
     }
+    // If stretching stays active, the worker picks up the new ratio via atomic
 }
 
 bool Loop::isTimeStretchActive() const {
@@ -366,18 +445,20 @@ bool Loop::isTimeStretchActive() const {
 
 int64_t Loop::playPosition() const {
     if (isTimeStretchActive()) {
-        return stretchRawPos_ % loopLength_;
+        return stretchRawPos_.load(std::memory_order_relaxed) % loopLength_;
     }
     return playPos_;
 }
 
 void Loop::clear() {
+    stopStretchWorker();
+
     layers_.clear();
     state_ = LoopState::Empty;
     loopLength_ = 0;
     playPos_ = 0;
     fractionalPos_ = 0.0;
-    reversed_ = false;
+    reversed_.store(false, std::memory_order_relaxed);
     speed_ = 1.0;
     lengthInBars_ = 0.0;
 
@@ -390,13 +471,7 @@ void Loop::clear() {
     scrambleLastStart_ = -1;
 
     // Clear stretch state
-    stretcher_.reset();
-    stretchBuf_.clear();
-    stretchInputWork_.clear();
-    stretchOutputWork_.clear();
-    stretchBufRead_ = 0;
-    stretchBufAvail_ = 0;
-    stretchRawPos_ = 0;
+    stretchRawPos_.store(0, std::memory_order_relaxed);
     recordedBpm_ = 0.0;
 }
 

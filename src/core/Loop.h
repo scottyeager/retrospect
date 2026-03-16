@@ -2,6 +2,7 @@
 
 #include "core/Metronome.h"  // For Quantize
 
+#include <atomic>
 #include <vector>
 #include <cstdint>
 #include <string>
@@ -11,6 +12,7 @@
 
 namespace retrospect {
 
+class StretchWorker;
 class TimeStretcher;
 
 /// State of a loop
@@ -121,7 +123,7 @@ public:
     Loop();
     ~Loop();
 
-    // Move-only (due to unique_ptr<TimeStretcher>)
+    // Move-only (due to unique_ptr<StretchWorker> and atomic members)
     Loop(Loop&&) noexcept;
     Loop& operator=(Loop&&) noexcept;
     Loop(const Loop&) = delete;
@@ -190,7 +192,7 @@ public:
     // Properties
     int64_t lengthSamples() const { return loopLength_; }
     int64_t playPosition() const;
-    bool isReversed() const { return reversed_; }
+    bool isReversed() const { return reversed_.load(std::memory_order_relaxed); }
     double speed() const { return speed_; }
     int layerCount() const { return static_cast<int>(layers_.size()); }
     int activeLayerCount() const;
@@ -243,14 +245,17 @@ private:
     /// Process one sample in scramble mode
     float processScrambleSample();
 
-    /// Fill the stretch output buffer with another block of stretched audio
-    void fillStretchBuffer();
+    /// Start the background stretch worker thread
+    void startStretchWorker();
+
+    /// Stop the background stretch worker thread
+    void stopStretchWorker();
 
     std::vector<LoopLayer> layers_;
     LoopState state_ = LoopState::Empty;
     int64_t loopLength_ = 0;
     int64_t playPos_ = 0;
-    bool reversed_ = false;
+    std::atomic<bool> reversed_{false};
     double speed_ = 1.0;
     double fractionalPos_ = 0.0;  // For non-integer speed ratios
     int crossfadeSamples_ = 256;
@@ -263,19 +268,11 @@ private:
     double currentBpm_ = 0.0;
     double sampleRate_ = 44100.0;
 
-    std::unique_ptr<TimeStretcher> stretcher_;
+    std::unique_ptr<StretchWorker> stretchWorker_;
 
-    // Stretch output ring buffer
-    std::vector<float> stretchBuf_;
-    int stretchBufRead_ = 0;
-    int stretchBufAvail_ = 0;
-
-    // Raw read position for feeding the stretcher (tracks progress through loop)
-    int64_t stretchRawPos_ = 0;
-
-    // Pre-allocated work buffers (avoid allocation during processing)
-    std::vector<float> stretchInputWork_;
-    std::vector<float> stretchOutputWork_;
+    /// Raw read position for feeding the stretcher (worker thread writes,
+    /// audio thread reads for overdub alignment and display).
+    std::atomic<int64_t> stretchRawPos_{0};
 
     // Scramble mode state
     bool scrambleActive_ = false;
@@ -287,10 +284,6 @@ private:
     int64_t scrambleFadeSamples_ = 0;    // Fade duration in samples
     int64_t scrambleLastStart_ = -1;     // Last chosen start (for allow_repeat=false)
     std::mt19937 scrambleRng_{42};       // RNG for random position selection
-
-    static constexpr int kStretchBlockSize = 512;
-    static constexpr int kStretchBufCapacity = 8192;
-    static constexpr int kMaxStretchInput = kStretchBlockSize * 4;
 };
 
 } // namespace retrospect

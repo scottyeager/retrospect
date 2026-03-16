@@ -69,6 +69,7 @@ add_library(retrospect_core STATIC
     src/core/Loop.cpp
     src/core/LoopEngine.cpp
     src/core/TimeStretcher.cpp
+    src/core/StretchWorker.cpp
 )
 target_include_directories(retrospect_core PUBLIC src)
 target_include_directories(retrospect_core PRIVATE ${signalsmith_stretch_SOURCE_DIR})
