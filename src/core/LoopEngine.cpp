@@ -81,6 +81,13 @@ LoopEngine::LoopEngine(int maxLoops, int maxLookbackBars,
 LoopEngine::~LoopEngine() {
     for (auto& bg : bgCaptures_) {
         if (bg && bg->thread.joinable()) {
+            bg->cancelled.store(true, std::memory_order_release);
+            bg->phase2Ready.store(true, std::memory_order_release);
+            bg->thread.join();
+        }
+    }
+    for (auto& bg : zombieCaptures_) {
+        if (bg && bg->thread.joinable()) {
             bg->thread.join();
         }
     }
@@ -503,7 +510,7 @@ void LoopEngine::checkBackgroundCaptures() {
 
         // Only install if the loop slot is still available.
         // If it was re-captured or filled by another operation, discard.
-        if (lp.isEmpty()) {
+        if (!bg->cancelled.load(std::memory_order_relaxed) && lp.isEmpty()) {
             lp.loadFromCapture(std::move(bg->completedAudio));
             lp.setCrossfadeSamples(bg->crossfadeSamples);
             lp.setLengthInBars(bg->bars);
@@ -522,6 +529,17 @@ void LoopEngine::checkBackgroundCaptures() {
         bg->thread.join();
         bg.reset();
     }
+
+    // Reap cancelled captures that have finished
+    zombieCaptures_.erase(
+        std::remove_if(zombieCaptures_.begin(), zombieCaptures_.end(),
+            [](std::unique_ptr<BackgroundCapture>& bg) {
+                if (!bg) return true;
+                if (!bg->done.load(std::memory_order_acquire)) return false;
+                bg->thread.join();
+                return true;
+            }),
+        zombieCaptures_.end());
 }
 
 void LoopEngine::cancelBackgroundCapture(int loopIndex) {
@@ -532,10 +550,9 @@ void LoopEngine::cancelBackgroundCapture(int loopIndex) {
     bg->cancelled.store(true, std::memory_order_release);
     bg->phase2Ready.store(true, std::memory_order_release);
 
-    if (bg->thread.joinable()) {
-        bg->thread.join();
-    }
-    bg.reset();
+    // Move to zombie list — the thread will be joined in checkBackgroundCaptures
+    // to avoid blocking the audio thread with thread::join().
+    zombieCaptures_.push_back(std::move(bg));
 }
 
 void LoopEngine::fulfillRecord(Loop& lp) {

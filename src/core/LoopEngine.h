@@ -348,6 +348,9 @@ private:
     /// Background capture threads (one per loop slot, pre-allocated)
     std::vector<std::unique_ptr<BackgroundCapture>> bgCaptures_;
 
+    /// Cancelled captures awaiting join (deferred off the audio thread)
+    std::vector<std::unique_ptr<BackgroundCapture>> zombieCaptures_;
+
     /// Pending quantized MIDI sync toggle: {executeSample, enable}
     std::optional<std::pair<int64_t, bool>> pendingMidiSync_;
 
