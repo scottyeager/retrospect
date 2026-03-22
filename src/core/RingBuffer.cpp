@@ -89,6 +89,10 @@ void RingBuffer::readFromSnapshot(float* dest, int numSamples, int64_t samplesAg
         numSamples = static_cast<int>(samplesAgo);
     }
 
+    // Note: the writer cannot lap this read region in practice. The buffer
+    // holds maxLookbackBars at minBpm (~32s of audio), while the background
+    // thread memcpy completes in microseconds.
+
     int64_t readStart = (snap.writePos - samplesAgo + cap * 2) % cap;
 
     int64_t spaceToEnd = cap - readStart;
