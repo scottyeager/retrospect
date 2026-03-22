@@ -26,7 +26,6 @@ Loop::Loop(Loop&& other) noexcept
     , recordedBpm_(other.recordedBpm_)
     , currentBpm_(other.currentBpm_)
     , sampleRate_(other.sampleRate_)
-    , stretchWorker_(std::move(other.stretchWorker_))
     , stretchRawPos_(other.stretchRawPos_.load(std::memory_order_relaxed))
     , scrambleActive_(other.scrambleActive_)
     , scrambleParams_(other.scrambleParams_)
@@ -38,6 +37,10 @@ Loop::Loop(Loop&& other) noexcept
     , scrambleLastStart_(other.scrambleLastStart_)
     , scrambleRng_(other.scrambleRng_)
 {
+    // Stop the worker before moving ownership so the feed callback's captured
+    // `this` pointer (pointing at `other`) is no longer in use.
+    other.stopStretchWorker();
+    stretchWorker_ = std::move(other.stretchWorker_);
     other.state_ = LoopState::Empty;
     other.loopLength_ = 0;
 }
@@ -59,6 +62,7 @@ Loop& Loop::operator=(Loop&& other) noexcept {
         recordedBpm_ = other.recordedBpm_;
         currentBpm_ = other.currentBpm_;
         sampleRate_ = other.sampleRate_;
+        other.stopStretchWorker();
         stretchWorker_ = std::move(other.stretchWorker_);
         stretchRawPos_.store(other.stretchRawPos_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         scrambleActive_ = other.scrambleActive_;
