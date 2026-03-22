@@ -181,9 +181,9 @@ float Loop::processDirectSample() {
 }
 
 float Loop::processStretchedSample() {
-    if (!stretchWorker_ || !stretchWorker_->isRunning()) {
+    if (!stretchWorker_) return 0.0f;
+    if (!stretchWorker_->isActive()) {
         startStretchWorker();
-        if (!stretchWorker_) return 0.0f;
     }
 
     // Update tempo ratio for the worker
@@ -226,11 +226,16 @@ float Loop::processStretchedSample() {
     return sample;
 }
 
-void Loop::startStretchWorker() {
-    if (stretchWorker_ && stretchWorker_->isRunning()) return;
-    if (loopLength_ <= 0) return;
+void Loop::setSampleRate(double sr) {
+    sampleRate_ = sr;
+    if (!stretchWorker_) {
+        stretchWorker_ = std::make_unique<StretchWorker>(sr);
+    }
+}
 
-    stretchWorker_ = std::make_unique<StretchWorker>();
+void Loop::startStretchWorker() {
+    if (!stretchWorker_ || stretchWorker_->isActive()) return;
+    if (loopLength_ <= 0) return;
 
     // Capture state needed by the feed callback. The callback runs on the
     // worker thread and reads loop layer data (benign race — layer audio is
@@ -257,13 +262,12 @@ void Loop::startStretchWorker() {
         self->stretchRawPos_.store(rawPos, std::memory_order_relaxed);
     };
 
-    stretchWorker_->start(sampleRate_, std::move(feedCb));
+    stretchWorker_->start(std::move(feedCb));
 }
 
 void Loop::stopStretchWorker() {
     if (stretchWorker_) {
         stretchWorker_->stop();
-        stretchWorker_.reset();
     }
 }
 

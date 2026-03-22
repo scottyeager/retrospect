@@ -2,59 +2,41 @@
 
 #include <algorithm>
 #include <cmath>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
 
 namespace retrospect {
 
-StretchWorker::StretchWorker() = default;
-
-StretchWorker::~StretchWorker() {
-    stop();
-}
-
-void StretchWorker::start(double sampleRate, FeedCallback feedCb) {
-    if (running_.load(std::memory_order_relaxed)) return;
-
-    feedCb_ = std::move(feedCb);
-
-    // Allocate buffers
+StretchWorker::StretchWorker(double sampleRate) {
     buf_.assign(static_cast<size_t>(kBufCapacity), 0.0f);
     inputWork_.resize(static_cast<size_t>(kMaxStretchInput), 0.0f);
     outputWork_.resize(static_cast<size_t>(kStretchBlockSize), 0.0f);
-    writePos_.store(0, std::memory_order_relaxed);
-    readPos_.store(0, std::memory_order_relaxed);
 
-    // Configure stretcher
     stretcher_ = std::make_unique<TimeStretcher>();
     stretcher_->configure(sampleRate);
 
-    // Create self-pipe for wake signaling
-    if (::pipe(wakeFd_) == 0) {
-        ::fcntl(wakeFd_[0], F_SETFL, O_NONBLOCK);
-        ::fcntl(wakeFd_[1], F_SETFL, O_NONBLOCK);
-    }
-
-    running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { workerLoop(); });
 }
 
-void StretchWorker::stop() {
-    if (!running_.load(std::memory_order_relaxed)) return;
-
-    running_.store(false, std::memory_order_release);
-
-    // Wake the worker so it can observe the stop flag
-    requestMore();
-
-    if (thread_.joinable()) {
-        thread_.join();
+StretchWorker::~StretchWorker() {
+    {
+        std::lock_guard lock(mutex_);
+        running_ = false;
     }
+    cv_.notify_one();
+    if (thread_.joinable()) thread_.join();
+}
 
-    // Close pipe
-    if (wakeFd_[0] >= 0) { ::close(wakeFd_[0]); wakeFd_[0] = -1; }
-    if (wakeFd_[1] >= 0) { ::close(wakeFd_[1]); wakeFd_[1] = -1; }
+void StretchWorker::start(FeedCallback feedCb) {
+    std::lock_guard lock(mutex_);
+    feedCb_ = std::move(feedCb);
+    resetBuffer();
+    active_.store(true, std::memory_order_release);
+    cv_.notify_one();
+}
+
+void StretchWorker::stop() {
+    std::lock_guard lock(mutex_);
+    active_.store(false, std::memory_order_release);
+    feedCb_ = nullptr;
 }
 
 void StretchWorker::setTempoRatio(double ratio) {
@@ -86,38 +68,28 @@ void StretchWorker::resetBuffer() {
 }
 
 void StretchWorker::requestMore() {
-    // Write a single byte to the wake pipe. Wait-free — if the pipe is full
-    // the worker is already awake or will wake soon.
-    if (wakeFd_[1] >= 0) {
-        char c = 1;
-        (void)::write(wakeFd_[1], &c, 1);
-    }
+    wakeRequested_.store(true, std::memory_order_release);
+    cv_.notify_one();
+}
+
+bool StretchWorker::needsFill() const {
+    int w = writePos_.load(std::memory_order_relaxed);
+    int r = readPos_.load(std::memory_order_relaxed);
+    int avail = (w - r + kBufCapacity) % kBufCapacity;
+    return avail < kFillThreshold;
 }
 
 void StretchWorker::workerLoop() {
-    while (running_.load(std::memory_order_acquire)) {
-        // Check if buffer needs filling
-        int w = writePos_.load(std::memory_order_relaxed);
-        int r = readPos_.load(std::memory_order_acquire);
-        int avail = (w - r + kBufCapacity) % kBufCapacity;
-
-        if (avail < kFillThreshold) {
-            fillOnce();
-            continue;  // Check again immediately
-        }
-
-        // Buffer is sufficiently full — wait for a wake signal
-        if (wakeFd_[0] >= 0) {
-            struct pollfd pfd;
-            pfd.fd = wakeFd_[0];
-            pfd.events = POLLIN;
-            pfd.revents = 0;
-            ::poll(&pfd, 1, 50);  // 50ms timeout as safety net
-
-            // Drain the pipe
-            char drain[64];
-            while (::read(wakeFd_[0], drain, sizeof(drain)) > 0) {}
-        }
+    std::unique_lock lock(mutex_);
+    while (running_) {
+        cv_.wait(lock, [this] {
+            return !running_ ||
+                   (active_.load(std::memory_order_relaxed) &&
+                    (needsFill() || wakeRequested_.load(std::memory_order_relaxed)));
+        });
+        if (!running_) break;
+        wakeRequested_.store(false, std::memory_order_relaxed);
+        fillOnce();
     }
 }
 

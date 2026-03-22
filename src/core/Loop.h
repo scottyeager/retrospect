@@ -13,7 +13,6 @@
 namespace retrospect {
 
 class StretchWorker;
-class TimeStretcher;
 
 /// State of a loop
 enum class LoopState {
@@ -226,8 +225,9 @@ public:
     void setCurrentBpm(double bpm);
     double currentBpm() const { return currentBpm_; }
 
-    /// Set the sample rate (needed for stretcher initialization)
-    void setSampleRate(double sr) { sampleRate_ = sr; }
+    /// Set the sample rate and pre-allocate the stretch worker.
+    /// Must be called once during initialization before audio processing.
+    void setSampleRate(double sr);
 
     /// Whether time stretching is currently active
     bool isTimeStretchActive() const;
@@ -245,10 +245,10 @@ private:
     /// Process one sample in scramble mode
     float processScrambleSample();
 
-    /// Start the background stretch worker thread
+    /// Activate the pre-allocated stretch worker with a new feed callback
     void startStretchWorker();
 
-    /// Stop the background stretch worker thread
+    /// Deactivate the stretch worker (thread stays alive for reuse)
     void stopStretchWorker();
 
     std::vector<LoopLayer> layers_;

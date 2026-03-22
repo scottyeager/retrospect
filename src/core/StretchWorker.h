@@ -3,9 +3,11 @@
 #include "core/TimeStretcher.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -16,10 +18,15 @@ namespace retrospect {
 /// thread produces stretched samples, decoupling stretch computation from
 /// the real-time audio deadline.
 ///
-/// Communication is lock-free:
+/// Lifecycle: constructed once per Loop (pre-allocates buffers and starts
+/// the worker thread). The thread blocks on a condition variable until
+/// activate() is called. deactivate() pauses production; the thread stays
+/// alive until destruction.
+///
+/// Communication:
 ///   - readPos_  is written only by the audio thread
 ///   - writePos_ is written only by the worker thread
-///   - A pipe-based eventfd/self-pipe wakes the worker without blocking
+///   - A condition variable wakes the worker when more samples are needed
 class StretchWorker {
 public:
     /// Callback that reads raw loop samples for the stretcher.
@@ -27,7 +34,9 @@ public:
     /// read position, advancing it. Called only on the worker thread.
     using FeedCallback = std::function<void(float* output, int count)>;
 
-    StretchWorker();
+    /// Pre-allocates all buffers, configures the stretcher, and starts
+    /// the worker thread (which blocks immediately until activated).
+    explicit StretchWorker(double sampleRate);
     ~StretchWorker();
 
     // Non-copyable, non-movable (owns a thread)
@@ -36,16 +45,16 @@ public:
     StretchWorker(StretchWorker&&) = delete;
     StretchWorker& operator=(StretchWorker&&) = delete;
 
-    /// Start the worker thread. Must call before any audio processing.
-    /// @param sampleRate  Audio sample rate
-    /// @param feedCb      Callback to read raw loop samples (called on worker thread)
-    void start(double sampleRate, FeedCallback feedCb);
+    /// Activate production with the given feed callback. Resets the
+    /// stretch buffer and wakes the worker thread.
+    void start(FeedCallback feedCb);
 
-    /// Stop the worker thread and join. Safe to call if not started.
+    /// Deactivate production. Blocks until any in-progress fill completes,
+    /// then clears the feed callback. The worker thread remains alive.
     void stop();
 
-    /// Whether the worker is running
-    bool isRunning() const { return running_.load(std::memory_order_relaxed); }
+    /// Whether the worker is actively producing stretched audio.
+    bool isActive() const { return active_.load(std::memory_order_relaxed); }
 
     /// Update the tempo ratio. Thread-safe (atomic).
     void setTempoRatio(double ratio);
@@ -76,6 +85,7 @@ public:
 private:
     void workerLoop();
     void fillOnce();
+    bool needsFill() const;
 
     std::unique_ptr<TimeStretcher> stretcher_;
     FeedCallback feedCb_;
@@ -86,14 +96,14 @@ private:
     alignas(64) std::atomic<int> readPos_{0};
 
     std::atomic<double> tempoRatio_{1.0};
-    std::atomic<bool> running_{false};
+    std::atomic<bool> active_{false};
     std::atomic<bool> wakeRequested_{false};
 
-    // Worker thread
+    // Worker thread synchronization
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool running_ = true;  // protected by mutex_
     std::thread thread_;
-
-    // Self-pipe for wake signaling (avoids spinning)
-    int wakeFd_[2] = {-1, -1};
 
     // Pre-allocated work buffers (worker thread only)
     std::vector<float> inputWork_;
