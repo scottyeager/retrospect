@@ -8,6 +8,7 @@ struct Config {
     // [audio]
     std::string audioBackend;             // "" = auto, "jack", "alsa"
     bool jackAutoConnect = true;          // Auto-connect JACK ports on startup
+    int inputChannels = 0;               // 0 = auto-detect from system capture ports
 
     // [engine]
     int maxLoops = 8;

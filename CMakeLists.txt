@@ -108,7 +108,7 @@ juce_add_console_app(retrospect
 )
 target_sources(retrospect PRIVATE
     src/audio_main.cpp
-    src/JackTransport.cpp
+    src/JackAudioIO.cpp
 )
 target_link_libraries(retrospect PRIVATE
     retrospect_config

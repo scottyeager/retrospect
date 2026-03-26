@@ -11,6 +11,11 @@
 # Only applies when using the JACK backend.
 # jack_auto_connect = true
 
+# Number of JACK input ports to register (0-64)
+# 0 = auto-detect from available system capture ports.
+# Only applies when using the JACK backend directly (--jack).
+# input_channels = 0
+
 [engine]
 # Number of loop slots (1-64)
 # max_loops = 8

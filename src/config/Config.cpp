@@ -51,6 +51,15 @@ Config Config::load() {
         cfg.jackAutoConnect = *v;
     }
 
+    if (auto v = tbl["audio"]["input_channels"].value<int64_t>()) {
+        if (*v >= 0 && *v <= 64) {
+            cfg.inputChannels = static_cast<int>(*v);
+        } else {
+            fprintf(stderr, "Warning: invalid audio.input_channels %lld, using default (auto)\n",
+                    static_cast<long long>(*v));
+        }
+    }
+
     // [engine]
     if (auto v = tbl["engine"]["max_loops"].value<int64_t>()) {
         if (*v >= 1 && *v <= 64) {
