@@ -8,8 +8,13 @@ Retrospect is a live audio looper with an "always recording" ring buffer. Loops 
 
 **Prerequisites** (Debian/Ubuntu):
 ```
-sudo apt install build-essential cmake libncurses-dev pkg-config liblo-dev
+sudo apt install build-essential cmake libncurses-dev pkg-config liblo-dev \
+  libjack-jackd2-dev libasound2-dev \
+  libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev \
+  libgl-dev libcurl4-openssl-dev
 ```
+
+The first line covers the core build tools and direct project dependencies. The second line provides JACK and ALSA audio backend headers for JUCE. The remaining packages are X11, OpenGL, and HTTP headers required by JUCE's build tooling (juceaide) even for headless/TUI builds.
 
 **Build:**
 ```
