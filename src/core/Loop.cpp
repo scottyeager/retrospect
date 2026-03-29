@@ -13,6 +13,7 @@ Loop::~Loop() {
 
 Loop::Loop(Loop&& other) noexcept
     : layers_(std::move(other.layers_))
+    , preRecordSnapshot_(std::move(other.preRecordSnapshot_))
     , state_(other.state_)
     , loopLength_(other.loopLength_)
     , playPos_(other.playPos_)
@@ -49,6 +50,7 @@ Loop& Loop::operator=(Loop&& other) noexcept {
     if (this != &other) {
         stopStretchWorker();
         layers_ = std::move(other.layers_);
+        preRecordSnapshot_ = std::move(other.preRecordSnapshot_);
         state_ = other.state_;
         loopLength_ = other.loopLength_;
         playPos_ = other.playPos_;
@@ -97,14 +99,15 @@ void Loop::addLayer(std::vector<float> audio) {
     layers_.push_back({std::move(audio), 1.0f, true});
 }
 
-void Loop::undoLayer() {
+bool Loop::undoLayer() {
     // Deactivate the most recent active layer (excluding the base layer)
     for (int i = static_cast<int>(layers_.size()) - 1; i > 0; --i) {
         if (layers_[static_cast<size_t>(i)].active) {
             layers_[static_cast<size_t>(i)].active = false;
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 void Loop::redoLayer() {
@@ -115,6 +118,44 @@ void Loop::redoLayer() {
             return;
         }
     }
+}
+
+void Loop::savePreRecordSnapshot() {
+    if (state_ == LoopState::Empty) return;
+    PreRecordSnapshot snap;
+    snap.layers = layers_;
+    snap.loopLength = loopLength_;
+    snap.lengthInBars = lengthInBars_;
+    snap.recordedBpm = recordedBpm_;
+    snap.state = (state_ == LoopState::Muted) ? LoopState::Muted : LoopState::Playing;
+    preRecordSnapshot_ = std::move(snap);
+}
+
+void Loop::restorePreRecordSnapshot() {
+    if (!preRecordSnapshot_) return;
+    stopStretchWorker();
+
+    auto& snap = *preRecordSnapshot_;
+    layers_ = std::move(snap.layers);
+    loopLength_ = snap.loopLength;
+    lengthInBars_ = snap.lengthInBars;
+    recordedBpm_ = snap.recordedBpm;
+    state_ = snap.state;
+
+    // Reset playback position
+    playPos_ = 0;
+    fractionalPos_ = 0.0;
+    stretchRawPos_.store(0, std::memory_order_relaxed);
+
+    // Clear scramble state
+    scrambleActive_ = false;
+    scrambleSnippetPos_ = 0;
+    scrambleSnippetLen_ = 0;
+    scrambleReadStart_ = 0;
+    scrambleFadeSamples_ = 0;
+    scrambleLastStart_ = -1;
+
+    preRecordSnapshot_.reset();
 }
 
 float Loop::getMixedSample(int64_t pos) const {
@@ -462,6 +503,7 @@ void Loop::clear() {
     stopStretchWorker();
 
     layers_.clear();
+    preRecordSnapshot_.reset();
     state_ = LoopState::Empty;
     loopLength_ = 0;
     playPos_ = 0;

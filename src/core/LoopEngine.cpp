@@ -541,11 +541,8 @@ void LoopEngine::fulfillRecord(Loop& lp) {
         return;
     }
 
-    // TODO: Instead of clearing, defer destruction of old layers until
-    // fulfillStopRecord (the commit point).  This enables:
-    //   1. Undo-during-record: cancel recording and restore previous content.
-    //   2. Song-section undo/redo: push old layers onto a history stack so
-    //      record/undo/redo cycles can switch between song parts.
+    // Save existing content so undo can restore it
+    lp.savePreRecordSnapshot();
     lp.clear();
 
     // Start accumulating per-channel input
@@ -1055,18 +1052,37 @@ void LoopEngine::drainCommands() {
             case CommandType::Undo: {
                 forEachTarget(cmd.loopIndex, [&](int idx) {
                     Loop& lp = loops_[static_cast<size_t>(idx)];
+                    std::string loopName = "Loop " + std::to_string(idx + 1);
+
+                    // Priority 1: cancel pending ops
                     if (lp.hasPendingOps()) {
                         if (lp.pendingOp()->opType == OpType::CaptureLoop)
                             cancelBackgroundCapture(idx);
                         lp.clearPendingOps();
                         if (callbacks_.onMessage)
-                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " pending op cancelled");
-                    } else {
-                        lp.undoLayer();
+                            callbacks_.onMessage(loopName + " pending op cancelled");
+
+                    // Priority 2: cancel active recording on this loop
+                    } else if (activeRecording_ && activeRecording_->loopIndex == idx) {
+                        activeRecording_.reset();
+                        isRecordingAtomic_.store(false, std::memory_order_relaxed);
+                        recordingLoopIdxAtomic_.store(-1, std::memory_order_relaxed);
+                        lp.restorePreRecordSnapshot();
                         if (callbacks_.onMessage)
-                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " undone (" +
+                            callbacks_.onMessage(loopName + (lp.isEmpty() ? " recording cancelled" : " recording cancelled, previous content restored"));
+
+                    // Priority 3: undo overdub layers
+                    } else if (lp.undoLayer()) {
+                        if (callbacks_.onMessage)
+                            callbacks_.onMessage(loopName + " undone (" +
                                                  std::to_string(lp.activeLayerCount()) + "/" +
                                                  std::to_string(lp.layerCount()) + " layers)");
+
+                    // Priority 4: restore pre-record snapshot
+                    } else if (lp.hasPreRecordSnapshot()) {
+                        lp.restorePreRecordSnapshot();
+                        if (callbacks_.onMessage)
+                            callbacks_.onMessage(loopName + " record undone, previous content restored");
                     }
                 });
                 break;

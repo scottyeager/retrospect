@@ -74,6 +74,16 @@ struct LoopLayer {
     bool active = true;  // Can be toggled for undo
 };
 
+/// Snapshot of loop content saved before a destructive record operation.
+/// Allows undoing a record to restore the previous loop contents.
+struct PreRecordSnapshot {
+    std::vector<LoopLayer> layers;
+    int64_t loopLength = 0;
+    double lengthInBars = 0.0;
+    double recordedBpm = 0.0;
+    LoopState state = LoopState::Empty;
+};
+
 /// Represents a single loop with multiple layers and playback controls.
 /// The loop length is determined by the first layer captured.
 class Loop {
@@ -94,11 +104,20 @@ public:
     /// Add an overdub layer. Must match the loop length.
     void addLayer(std::vector<float> audio);
 
-    /// Undo the most recent active layer
-    void undoLayer();
+    /// Undo the most recent active layer. Returns true if a layer was undone.
+    bool undoLayer();
 
     /// Redo the most recently undone layer
     void redoLayer();
+
+    /// Save a snapshot of current loop content before a destructive record.
+    void savePreRecordSnapshot();
+
+    /// Whether a pre-record snapshot is available for undo.
+    bool hasPreRecordSnapshot() const { return preRecordSnapshot_.has_value(); }
+
+    /// Restore the pre-record snapshot, replacing current loop content.
+    void restorePreRecordSnapshot();
 
     /// Get the mixed output sample at the current playback position,
     /// then advance the position. Returns 0 if empty/muted.
@@ -211,6 +230,7 @@ private:
     void stopStretchWorker();
 
     std::vector<LoopLayer> layers_;
+    std::optional<PreRecordSnapshot> preRecordSnapshot_;
     LoopState state_ = LoopState::Empty;
     int64_t loopLength_ = 0;
     int64_t playPos_ = 0;
