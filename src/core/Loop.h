@@ -22,37 +22,29 @@ enum class LoopState {
     Recording  // Overdubbing a new layer
 };
 
+/// Operation types for scheduling
+enum class OpType {
+    CaptureLoop,
+    Record,
+    StopRecord,
+    Mute,
+    Unmute,
+    ToggleMute,
+    Reverse,
+    StartOverdub,
+    StopOverdub,
+    UndoLayer,
+    RedoLayer,
+    SetSpeed,
+    ClearLoop,
+    Seek,
+    ScrambleOn,
+    ScrambleOff,
+    SetScrambleWindow
+};
+
 /// Direction for undo/redo pending operations
 enum class UndoDirection { Undo, Redo };
-
-/// A single pending operation waiting for a quantization boundary.
-/// Each field represents the execution sample at which the op should fire.
-struct PendingTimedOp {
-    int64_t executeSample = 0;
-    Quantize quantize = Quantize::Bar;
-};
-
-/// Pending undo/redo with a count (last-wins for direction)
-struct PendingUndo {
-    int64_t executeSample = 0;
-    Quantize quantize = Quantize::Bar;
-    int count = 1;
-    UndoDirection direction = UndoDirection::Undo;
-};
-
-/// Pending speed change with target value
-struct PendingSpeed {
-    int64_t executeSample = 0;
-    Quantize quantize = Quantize::Bar;
-    double speed = 1.0;
-};
-
-/// Pending capture with lookback duration
-struct PendingCapture {
-    int64_t executeSample = 0;
-    Quantize quantize = Quantize::Bar;
-    int64_t lookbackSamples = 0;
-};
 
 /// Parameters for scramble mode
 struct ScrambleParams {
@@ -61,51 +53,18 @@ struct ScrambleParams {
     bool allowRepeat = true;       // Whether the same start position can repeat
 };
 
-/// Pending scramble on/off with parameters
-struct PendingScramble {
+/// A single pending operation waiting for a quantization boundary.
+/// Each loop has at most one pending operation at a time.
+struct PendingOp {
+    OpType opType = OpType::Mute;
     int64_t executeSample = 0;
     Quantize quantize = Quantize::Bar;
-    bool enable = true;            // true = turn on, false = turn off
-    ScrambleParams params;
-};
 
-/// All pending state for a single loop, organized by independent slots.
-/// Within each slot, only one operation can be pending (last-wins).
-struct PendingState {
-    std::optional<PendingTimedOp> mute;      // Mute/Unmute/ToggleMute
-    std::optional<PendingTimedOp> overdub;    // StartOverdub/StopOverdub
-    std::optional<PendingTimedOp> reverse;    // Reverse
-    std::optional<PendingUndo>    undo;       // UndoLayer/RedoLayer
-    std::optional<PendingSpeed>   speed;      // SetSpeed
-    std::optional<PendingTimedOp> clear;      // ClearLoop
-    std::optional<PendingCapture> capture;    // CaptureLoop
-    std::optional<PendingTimedOp> record;     // Record/StopRecord
-    std::optional<PendingScramble> scramble;  // ScrambleOn/ScrambleOff
-
-    /// Which mute op: Mute, Unmute, or ToggleMute
-    enum class MuteOp { Mute, Unmute, Toggle } muteOp = MuteOp::Toggle;
-
-    /// Which overdub op: Start or Stop
-    enum class OverdubOp { Start, Stop } overdubOp = OverdubOp::Start;
-
-    /// Which record op: Start or Stop
-    enum class RecordOp { Start, Stop } recordOp = RecordOp::Start;
-
-    bool hasAny() const {
-        return mute || overdub || reverse || undo || speed || clear || capture || record || scramble;
-    }
-
-    void clearAll() {
-        mute.reset();
-        overdub.reset();
-        reverse.reset();
-        undo.reset();
-        speed.reset();
-        clear.reset();
-        capture.reset();
-        record.reset();
-        scramble.reset();
-    }
+    // Op-specific payload (only the relevant field is used based on opType)
+    double speed = 1.0;              // SetSpeed
+    int64_t lookbackSamples = 0;     // CaptureLoop
+    int undoCount = 1;               // UndoLayer/RedoLayer
+    ScrambleParams scrambleParams;   // ScrambleOn
 };
 
 /// A single layer of audio in a loop (one overdub pass)
@@ -207,10 +166,10 @@ public:
     void setCrossfadeSamples(int samples) { crossfadeSamples_ = samples; }
 
     // --- Pending state ---
-    const PendingState& pendingState() const { return pending_; }
-    PendingState& pendingState() { return pending_; }
-    bool hasPendingOps() const { return pending_.hasAny(); }
-    void clearPendingOps() { pending_.clearAll(); }
+    const std::optional<PendingOp>& pendingOp() const { return pending_; }
+    std::optional<PendingOp>& pendingOp() { return pending_; }
+    bool hasPendingOps() const { return pending_.has_value(); }
+    void clearPendingOps() { pending_.reset(); }
 
     // --- Time stretching ---
 
@@ -261,7 +220,7 @@ private:
     int crossfadeSamples_ = 256;
     double lengthInBars_ = 0.0;
     int id_ = -1;
-    PendingState pending_;
+    std::optional<PendingOp> pending_;
 
     // Time stretch state
     double recordedBpm_ = 0.0;

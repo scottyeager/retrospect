@@ -218,76 +218,62 @@ void LoopEngine::processBlock(const float* const* input, int inputChannelCount,
 }
 
 void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
-    auto& ps = lp.pendingState();
+    auto& pending = lp.pendingOp();
+    if (!pending || pending->executeSample > currentSample) return;
 
-    // Clear — if due, execute and cancel everything else
-    if (ps.clear && ps.clear->executeSample <= currentSample) {
-        cancelBackgroundCapture(lp.id());
-        lp.clear();
-        lastMessage_ = "Loop " + std::to_string(lp.id()) + " cleared";
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        ps.clearAll();
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-        return;
-    }
+    PendingOp op = *pending;
+    lp.clearPendingOps();
+    int id = lp.id();
 
-    // Capture — signal phase 2 of the background capture thread
-    if (ps.capture && ps.capture->executeSample <= currentSample) {
-        ps.capture.reset();
-        signalCapturePhase2(lp.id());
-    }
+    switch (op.opType) {
+        case OpType::ClearLoop:
+            cancelBackgroundCapture(id);
+            lp.clear();
+            lastMessage_ = "Loop " + std::to_string(id) + " cleared";
+            break;
 
-    // Record start/stop
-    if (ps.record && ps.record->executeSample <= currentSample) {
-        auto recordOp = ps.recordOp;
-        ps.record.reset();
-        if (recordOp == PendingState::RecordOp::Start) {
+        case OpType::CaptureLoop:
+            signalCapturePhase2(id);
+            return;  // No message needed — checkBackgroundCaptures handles it
+
+        case OpType::Record:
             fulfillRecord(lp);
-        } else {
+            return;  // fulfillRecord sends its own message
+
+        case OpType::StopRecord:
             fulfillStopRecord(lp);
-        }
-    }
+            return;  // fulfillStopRecord sends its own message
 
-    // Mute
-    if (ps.mute && ps.mute->executeSample <= currentSample) {
-        auto muteOp = ps.muteOp;
-        ps.mute.reset();
-        switch (muteOp) {
-            case PendingState::MuteOp::Mute:
-                lp.mute();
-                lastMessage_ = "Loop " + std::to_string(lp.id()) + " muted";
-                break;
-            case PendingState::MuteOp::Unmute:
-                lp.play();
-                lastMessage_ = "Loop " + std::to_string(lp.id()) + " unmuted";
-                break;
-            case PendingState::MuteOp::Toggle:
-                lp.toggleMute();
-                lastMessage_ = "Loop " + std::to_string(lp.id()) +
-                              (lp.isMuted() ? " muted" : " unmuted");
-                break;
-        }
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-    }
+        case OpType::Mute:
+            lp.mute();
+            lastMessage_ = "Loop " + std::to_string(id) + " muted";
+            break;
 
-    // Overdub
-    if (ps.overdub && ps.overdub->executeSample <= currentSample) {
-        auto overdubOp = ps.overdubOp;
-        ps.overdub.reset();
-        if (overdubOp == PendingState::OverdubOp::Start) {
+        case OpType::Unmute:
+            lp.play();
+            lastMessage_ = "Loop " + std::to_string(id) + " unmuted";
+            break;
+
+        case OpType::ToggleMute:
+            lp.toggleMute();
+            lastMessage_ = "Loop " + std::to_string(id) +
+                          (lp.isMuted() ? " muted" : " unmuted");
+            break;
+
+        case OpType::StartOverdub: {
             lp.startOverdub();
-            // Initialize per-channel overdub buffers
             int numCh = static_cast<int>(inputChannels_.size());
             overdubChannelBuffers_.resize(static_cast<size_t>(numCh));
             for (auto& buf : overdubChannelBuffers_) {
                 buf.assign(static_cast<size_t>(lp.lengthSamples()), 0.0f);
             }
             overdubActiveChannelMask_ = 0;
-            overdubLoopIndex_ = lp.id();
-            lastMessage_ = "Loop " + std::to_string(lp.id()) + " overdub started";
-        } else {
-            // Mix down active channels into the overdub layer
+            overdubLoopIndex_ = id;
+            lastMessage_ = "Loop " + std::to_string(id) + " overdub started";
+            break;
+        }
+
+        case OpType::StopOverdub: {
             if (lp.id() == overdubLoopIndex_ && !overdubChannelBuffers_.empty()) {
                 auto& layerAudio = lp.recordLayerAudio();
                 for (size_t ch = 0; ch < overdubChannelBuffers_.size(); ++ch) {
@@ -300,69 +286,59 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
                     }
                 }
             }
-            // Reset per-layer overdub state
             overdubChannelBuffers_.clear();
             overdubActiveChannelMask_ = 0;
             overdubLoopIndex_ = -1;
             lp.stopOverdub();
-            lastMessage_ = "Loop " + std::to_string(lp.id()) + " overdub stopped";
+            lastMessage_ = "Loop " + std::to_string(id) + " overdub stopped";
+            break;
         }
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-    }
 
-    // Reverse
-    if (ps.reverse && ps.reverse->executeSample <= currentSample) {
-        ps.reverse.reset();
-        lp.toggleReverse();
-        lastMessage_ = "Loop " + std::to_string(lp.id()) +
-                      (lp.isReversed() ? " reversed" : " forward");
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-    }
+        case OpType::Reverse:
+            lp.toggleReverse();
+            lastMessage_ = "Loop " + std::to_string(id) +
+                          (lp.isReversed() ? " reversed" : " forward");
+            break;
 
-    // Speed
-    if (ps.speed && ps.speed->executeSample <= currentSample) {
-        double spd = ps.speed->speed;
-        ps.speed.reset();
-        lp.setSpeed(spd);
-        lastMessage_ = "Loop " + std::to_string(lp.id()) + " speed: " +
-                      std::to_string(spd) + "x";
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-    }
+        case OpType::SetSpeed:
+            lp.setSpeed(op.speed);
+            lastMessage_ = "Loop " + std::to_string(id) + " speed: " +
+                          std::to_string(op.speed) + "x";
+            break;
 
-    // Scramble on/off
-    if (ps.scramble && ps.scramble->executeSample <= currentSample) {
-        PendingScramble sc = *ps.scramble;
-        ps.scramble.reset();
-        if (sc.enable) {
-            lp.scrambleOn(sc.params, metronome_.samplesPerBeat());
-            lastMessage_ = "Loop " + std::to_string(lp.id()) + " scramble ON";
-        } else {
+        case OpType::ScrambleOn:
+            lp.scrambleOn(op.scrambleParams, metronome_.samplesPerBeat());
+            lastMessage_ = "Loop " + std::to_string(id) + " scramble ON";
+            break;
+
+        case OpType::ScrambleOff:
             lp.scrambleOff();
-            lastMessage_ = "Loop " + std::to_string(lp.id()) + " scramble OFF";
-        }
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+            lastMessage_ = "Loop " + std::to_string(id) + " scramble OFF";
+            break;
+
+        case OpType::UndoLayer:
+            for (int n = 0; n < op.undoCount; ++n) lp.undoLayer();
+            lastMessage_ = "Loop " + std::to_string(id) + " " +
+                          std::to_string(op.undoCount) + " layer(s) undone";
+            break;
+
+        case OpType::RedoLayer:
+            for (int n = 0; n < op.undoCount; ++n) lp.redoLayer();
+            lastMessage_ = "Loop " + std::to_string(id) + " " +
+                          std::to_string(op.undoCount) + " layer(s) redone";
+            break;
+
+        case OpType::Seek:
+            lp.seek(static_cast<int64_t>(op.speed));  // speed field reused for seek pos
+            return;
+
+        case OpType::SetScrambleWindow:
+            lp.setScrambleWindowDuration(op.speed);  // speed field reused for duration
+            return;
     }
 
-    // Undo/Redo
-    if (ps.undo && ps.undo->executeSample <= currentSample) {
-        PendingUndo u = *ps.undo;
-        ps.undo.reset();
-        for (int n = 0; n < u.count; ++n) {
-            if (u.direction == UndoDirection::Undo)
-                lp.undoLayer();
-            else
-                lp.redoLayer();
-        }
-        std::string verb = (u.direction == UndoDirection::Undo) ? "undone" : "redone";
-        lastMessage_ = "Loop " + std::to_string(lp.id()) + " " +
-                      std::to_string(u.count) + " layer(s) " + verb;
-        if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
-        if (callbacks_.onStateChanged) callbacks_.onStateChanged();
-    }
+    if (callbacks_.onMessage) callbacks_.onMessage(lastMessage_);
+    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
 }
 
 LoopEngine::ActiveChannels LoopEngine::detectActiveChannels(int64_t captureStartSample) const {
@@ -917,63 +893,36 @@ void LoopEngine::drainCommands() {
             }
         };
 
+        /// Set a pending op on a loop, cancelling any in-flight capture if replaced.
+        auto setPendingOp = [&](int idx, PendingOp op) {
+            Loop& lp = loops_[static_cast<size_t>(idx)];
+            // If replacing a pending capture, cancel the background thread
+            if (lp.hasPendingOps() && lp.pendingOp()->opType == OpType::CaptureLoop
+                && op.opType != OpType::CaptureLoop) {
+                cancelBackgroundCapture(idx);
+            }
+            lp.pendingOp() = op;
+        };
+
         switch (cmd.commandType) {
             case CommandType::ScheduleOp: {
                 int64_t execSample = computeExecuteSample(cmd.quantize);
                 forEachTarget(cmd.loopIndex, [&](int idx) {
-                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
-                    switch (cmd.opType) {
-                        case OpType::Mute:
-                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                            ps.muteOp = PendingState::MuteOp::Mute;
-                            break;
-                        case OpType::Unmute:
-                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                            ps.muteOp = PendingState::MuteOp::Unmute;
-                            break;
-                        case OpType::ToggleMute:
-                            ps.mute = PendingTimedOp{execSample, cmd.quantize};
-                            ps.muteOp = PendingState::MuteOp::Toggle;
-                            break;
-                        case OpType::Reverse:
-                            ps.reverse = PendingTimedOp{execSample, cmd.quantize};
-                            break;
-                        case OpType::StartOverdub:
-                            ps.overdub = PendingTimedOp{execSample, cmd.quantize};
-                            ps.overdubOp = PendingState::OverdubOp::Start;
-                            break;
-                        case OpType::StopOverdub:
-                            ps.overdub = PendingTimedOp{execSample, cmd.quantize};
-                            ps.overdubOp = PendingState::OverdubOp::Stop;
-                            break;
-                        case OpType::UndoLayer:
-                            if (ps.undo && ps.undo->direction == UndoDirection::Undo) {
-                                ps.undo->count++;
-                            } else {
-                                ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Undo};
-                            }
-                            break;
-                        case OpType::RedoLayer:
-                            if (ps.undo && ps.undo->direction == UndoDirection::Redo) {
-                                ps.undo->count++;
-                            } else {
-                                ps.undo = PendingUndo{execSample, cmd.quantize, 1, UndoDirection::Redo};
-                            }
-                            break;
-                        case OpType::ClearLoop:
-                            ps.clear = PendingTimedOp{execSample, cmd.quantize};
-                            break;
-                        // These use dedicated CommandTypes, but handle gracefully
-                        case OpType::CaptureLoop:
-                        case OpType::Record:
-                        case OpType::StopRecord:
-                        case OpType::SetSpeed:
-                        case OpType::Seek:
-                        case OpType::ScrambleOn:
-                        case OpType::ScrambleOff:
-                        case OpType::SetScrambleWindow:
-                            break;
+                    PendingOp op;
+                    op.opType = cmd.opType;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+
+                    // Accumulate undo/redo count if already pending the same direction
+                    if (cmd.opType == OpType::UndoLayer || cmd.opType == OpType::RedoLayer) {
+                        auto& pending = loops_[static_cast<size_t>(idx)].pendingOp();
+                        if (pending && pending->opType == cmd.opType) {
+                            pending->undoCount++;
+                            return;
+                        }
                     }
+
+                    setPendingOp(idx, op);
                 });
                 break;
             }
@@ -984,7 +933,6 @@ void LoopEngine::drainCommands() {
                 int64_t lookbackSamples = static_cast<int64_t>(
                     std::round(static_cast<double>(cmd.lookbackBars) *
                                metronome_.samplesPerBar()));
-                // Clamp to minimum available across all input channels
                 for (auto& ch : inputChannels_) {
                     lookbackSamples = std::min(lookbackSamples, ch.ringBuffer().available());
                 }
@@ -994,13 +942,12 @@ void LoopEngine::drainCommands() {
                     break;
                 }
                 forEachTarget(cmd.loopIndex, [&](int idx) {
-                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
-                    PendingCapture cap;
-                    cap.executeSample = execSample;
-                    cap.quantize = cmd.quantize;
-                    cap.lookbackSamples = lookbackSamples;
-                    ps.capture = cap;
-                    // Spawn phase 1 immediately to start copying bulk audio
+                    PendingOp op;
+                    op.opType = OpType::CaptureLoop;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    op.lookbackSamples = lookbackSamples;
+                    setPendingOp(idx, op);
                     beginCapture(idx, lookbackSamples, gap);
                 });
                 break;
@@ -1008,26 +955,34 @@ void LoopEngine::drainCommands() {
             case CommandType::Record: {
                 int64_t execSample = computeExecuteSample(cmd.quantize);
                 forEachTarget(cmd.loopIndex, [&](int idx) {
-                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
-                    ps.record = PendingTimedOp{execSample, cmd.quantize};
-                    ps.recordOp = PendingState::RecordOp::Start;
+                    PendingOp op;
+                    op.opType = OpType::Record;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    setPendingOp(idx, op);
                 });
                 break;
             }
             case CommandType::StopRecord: {
                 int64_t execSample = computeExecuteSample(cmd.quantize);
                 forEachTarget(cmd.loopIndex, [&](int idx) {
-                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
-                    ps.record = PendingTimedOp{execSample, cmd.quantize};
-                    ps.recordOp = PendingState::RecordOp::Stop;
+                    PendingOp op;
+                    op.opType = OpType::StopRecord;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    setPendingOp(idx, op);
                 });
                 break;
             }
             case CommandType::SetSpeed: {
                 int64_t execSample = computeExecuteSample(cmd.quantize);
                 forEachTarget(cmd.loopIndex, [&](int idx) {
-                    auto& ps = loops_[static_cast<size_t>(idx)].pendingState();
-                    ps.speed = PendingSpeed{execSample, cmd.quantize, cmd.value};
+                    PendingOp op;
+                    op.opType = OpType::SetSpeed;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    op.speed = cmd.value;
+                    setPendingOp(idx, op);
                 });
                 break;
             }
@@ -1035,7 +990,6 @@ void LoopEngine::drainCommands() {
                 metronome_.setBpm(cmd.value);
                 midiSync_.setBpm(cmd.value);
                 if (bpmChangedCallback_) bpmChangedCallback_(cmd.value);
-                // Propagate BPM change to all loops for time stretching
                 double newBpm = metronome_.bpm();
                 for (auto& lp : loops_) {
                     if (!lp.isEmpty()) {
@@ -1046,9 +1000,15 @@ void LoopEngine::drainCommands() {
             }
             case CommandType::CancelPending: {
                 if (cmd.loopIndex >= 0 && cmd.loopIndex < maxLoops()) {
-                    loops_[static_cast<size_t>(cmd.loopIndex)].clearPendingOps();
+                    auto& lp = loops_[static_cast<size_t>(cmd.loopIndex)];
+                    if (lp.hasPendingOps() && lp.pendingOp()->opType == OpType::CaptureLoop)
+                        cancelBackgroundCapture(cmd.loopIndex);
+                    lp.clearPendingOps();
                 } else {
-                    for (auto& lp : loops_) {
+                    for (int i = 0; i < maxLoops(); ++i) {
+                        auto& lp = loops_[static_cast<size_t>(i)];
+                        if (lp.hasPendingOps() && lp.pendingOp()->opType == OpType::CaptureLoop)
+                            cancelBackgroundCapture(i);
                         lp.clearPendingOps();
                     }
                 }
@@ -1059,44 +1019,44 @@ void LoopEngine::drainCommands() {
                 break;
             }
             case CommandType::ScrambleOn: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                PendingScramble sc;
-                sc.executeSample = computeExecuteSample(cmd.quantize);
-                sc.quantize = cmd.quantize;
-                sc.enable = true;
-                sc.params = cmd.scrambleParams;
-                ps.scramble = sc;
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    PendingOp op;
+                    op.opType = OpType::ScrambleOn;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    op.scrambleParams = cmd.scrambleParams;
+                    setPendingOp(idx, op);
+                });
                 break;
             }
             case CommandType::ScrambleOff: {
-                int idx = cmd.loopIndex;
-                if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                auto& ps = lp.pendingState();
-                PendingScramble sc;
-                sc.executeSample = computeExecuteSample(cmd.quantize);
-                sc.quantize = cmd.quantize;
-                sc.enable = false;
-                ps.scramble = sc;
+                int64_t execSample = computeExecuteSample(cmd.quantize);
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    PendingOp op;
+                    op.opType = OpType::ScrambleOff;
+                    op.executeSample = execSample;
+                    op.quantize = cmd.quantize;
+                    setPendingOp(idx, op);
+                });
                 break;
             }
             case CommandType::SetScrambleWindow: {
+                // Immediate — no pending op needed
                 int idx = cmd.loopIndex;
                 if (idx < 0 || idx >= maxLoops()) break;
-                Loop& lp = loops_[static_cast<size_t>(idx)];
-                lp.setScrambleWindowDuration(cmd.value);
+                loops_[static_cast<size_t>(idx)].setScrambleWindowDuration(cmd.value);
                 break;
             }
             case CommandType::Undo: {
                 forEachTarget(cmd.loopIndex, [&](int idx) {
                     Loop& lp = loops_[static_cast<size_t>(idx)];
-                    if (lp.pendingState().hasAny()) {
+                    if (lp.hasPendingOps()) {
+                        if (lp.pendingOp()->opType == OpType::CaptureLoop)
+                            cancelBackgroundCapture(idx);
                         lp.clearPendingOps();
                         if (callbacks_.onMessage)
-                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " pending ops cancelled");
+                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " pending op cancelled");
                     } else {
                         lp.undoLayer();
                         if (callbacks_.onMessage)

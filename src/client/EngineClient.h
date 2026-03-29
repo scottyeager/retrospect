@@ -9,9 +9,6 @@
 
 namespace retrospect {
 
-// Forward
-enum class OpType;
-
 /// Snapshot of metronome state for display
 struct MetronomeSnapshot {
     int bar = 0;

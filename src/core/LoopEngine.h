@@ -18,26 +18,7 @@
 
 namespace retrospect {
 
-/// Types of operations that can be quantized
-enum class OpType {
-    CaptureLoop,     // Capture from ring buffer and start playing
-    Record,          // Start classic recording (sets loop length)
-    StopRecord,      // Stop classic recording and start playback
-    Mute,            // Mute a loop
-    Unmute,          // Unmute a loop
-    ToggleMute,      // Toggle mute state
-    Reverse,         // Toggle reverse playback
-    StartOverdub,    // Begin overdub recording
-    StopOverdub,     // Stop overdub recording
-    UndoLayer,       // Undo last overdub layer
-    RedoLayer,       // Redo last undone layer
-    SetSpeed,        // Change playback speed
-    ClearLoop,       // Clear a loop
-    Seek,            // Seek/retrigger to a position
-    ScrambleOn,      // Enable scramble mode
-    ScrambleOff,     // Disable scramble mode
-    SetScrambleWindow // Change scramble window duration
-};
+// OpType is defined in Loop.h
 
 /// Human-readable description for an OpType
 std::string opTypeDescription(OpType type);
