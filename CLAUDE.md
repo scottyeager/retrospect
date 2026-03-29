@@ -8,8 +8,12 @@ Retrospect is a live audio looper with an "always recording" ring buffer. Loops 
 
 **Prerequisites** (Debian/Ubuntu):
 ```
-sudo apt install build-essential cmake libncurses-dev pkg-config liblo-dev
+sudo apt install build-essential cmake libncurses-dev pkg-config liblo-dev \
+    libjack-jackd2-dev libasound2-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev
 ```
+The X11 and ALSA packages are required by JUCE's build tooling (juceaide) even though Retrospect is a console app.
+
+**Claude Code web sandbox note:** `apt-get install` fails with DNS errors because the sandbox proxy blocks DNS. Use `dangerouslyDisableSandbox: true` on Bash tool calls to install packages.
 
 **Build:**
 ```
