@@ -541,7 +541,11 @@ void LoopEngine::fulfillRecord(Loop& lp) {
         return;
     }
 
-    // Clear the target loop if it has content
+    // TODO: Instead of clearing, defer destruction of old layers until
+    // fulfillStopRecord (the commit point).  This enables:
+    //   1. Undo-during-record: cancel recording and restore previous content.
+    //   2. Song-section undo/redo: push old layers onto a history stack so
+    //      record/undo/redo cycles can switch between song parts.
     lp.clear();
 
     // Start accumulating per-channel input
