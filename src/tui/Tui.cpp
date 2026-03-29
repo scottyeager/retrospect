@@ -370,11 +370,11 @@ void Tui::drawControls(int startRow) {
 
     mvprintw(startRow + 1, 2, "1-8/Up/Dn: Loop     SPACE: Capture loop    r: Record/stop");
     mvprintw(startRow + 2, 2, "m: Mute/unmute      v: Reverse             o/O: Overdub on/off");
-    mvprintw(startRow + 3, 2, "u: Undo layer       U: Redo layer          c: Clear loop");
+    mvprintw(startRow + 3, 2, "z: Undo             u: Undo layer          U: Redo layer");
     mvprintw(startRow + 4, 2, "[/]: Speed -/+      Tab: Quantize mode     +/-: BPM +/-5");
     mvprintw(startRow + 5, 2, "B/b: Lookback +/-   M: Click on/off        t: Tap tempo");
     mvprintw(startRow + 6, 2, "s: Scramble toggle  S: MIDI sync on/off    Esc: Cancel pending");
-    mvprintw(startRow + 7, 2, "q: Quit");
+    mvprintw(startRow + 7, 2, "c: Clear loop       q: Quit");
 }
 
 void Tui::drawMessages(int startRow) {
