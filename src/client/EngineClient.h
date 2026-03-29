@@ -140,6 +140,10 @@ public:
                                   Quantize quantize) = 0;
     virtual void executeOpNow(OpType type, int loopIndex) = 0;
     virtual void cancelPending() = 0;
+    virtual void cancelPendingForLoop(int loopIndex) = 0;
+
+    /// Universal undo: cancel pending ops if any, otherwise undo a layer
+    virtual void undo(int loopIndex = -1) = 0;
     virtual void scheduleScrambleOn(int loopIndex, Quantize quantize,
                                     const ScrambleParams& params) = 0;
     virtual void scheduleScrambleOff(int loopIndex, Quantize quantize) = 0;

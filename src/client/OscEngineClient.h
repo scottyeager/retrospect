@@ -30,6 +30,8 @@ public:
                           Quantize quantize) override;
     void executeOpNow(OpType type, int loopIndex) override;
     void cancelPending() override;
+    void cancelPendingForLoop(int loopIndex) override;
+    void undo(int loopIndex = -1) override;
     void scheduleScrambleOn(int loopIndex, Quantize quantize,
                             const ScrambleParams& params) override;
     void scheduleScrambleOff(int loopIndex, Quantize quantize) override;

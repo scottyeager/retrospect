@@ -101,7 +101,8 @@ enum class CommandType {
     SetMidiSync,    // Enable/disable MIDI sync (quantized)
     ScrambleOn,     // Enable scramble mode on a loop
     ScrambleOff,    // Disable scramble mode on a loop
-    SetScrambleWindow // Change scramble window duration
+    SetScrambleWindow, // Change scramble window duration
+    Undo            // Universal undo: cancel pending if any, else undo layer
 };
 
 /// Command sent from TUI thread to audio thread
@@ -181,6 +182,9 @@ public:
 
     /// Cancel pending operations for a specific loop
     void cancelPending(int loopIndex);
+
+    /// Universal undo: cancel pending ops if any, otherwise undo a layer
+    void undo(int loopIndex = -1);
 
     // Accessors
     Metronome& metronome() { return metronome_; }

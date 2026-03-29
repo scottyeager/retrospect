@@ -61,6 +61,10 @@ bool OscServer::start() {
                                 handleLookbackBars, this);
     lo_server_thread_add_method(serverThread_, "/retro/cancel_pending", "",
                                 handleCancelPending, this);
+    lo_server_thread_add_method(serverThread_, "/retro/cancel_pending", "i",
+                                handleCancelPendingLoop, this);
+    lo_server_thread_add_method(serverThread_, "/retro/undo", "i",
+                                handleUndoUniversal, this);
     lo_server_thread_add_method(serverThread_, "/retro/loop/select", "i",
                                 handleSelectLoop, this);
     lo_server_thread_add_method(serverThread_, "/retro/loop/deselect", "i",
@@ -366,6 +370,20 @@ int OscServer::handleCancelPending(const char*, const char*, lo_arg**,
                                     int, lo_message, void* user) {
     auto* self = static_cast<OscServer*>(user);
     self->engine_.cancelPending();
+    return 0;
+}
+
+int OscServer::handleCancelPendingLoop(const char*, const char*, lo_arg** argv,
+                                        int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.cancelPending(argv[0]->i);
+    return 0;
+}
+
+int OscServer::handleUndoUniversal(const char*, const char*, lo_arg** argv,
+                                    int, lo_message, void* user) {
+    auto* self = static_cast<OscServer*>(user);
+    self->engine_.undo(argv[0]->i);
     return 0;
 }
 

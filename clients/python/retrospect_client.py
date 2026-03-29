@@ -326,6 +326,10 @@ class RetrospectClient:
         """Cancel all pending (queued) operations."""
         self._client.send_message("/retro/cancel_pending", [])
 
+    def undo_universal(self, loop: int = -1) -> None:
+        """Universal undo: cancel pending ops if any, otherwise undo a layer."""
+        self._client.send_message("/retro/undo", [loop])
+
     # -- Loop selection -------------------------------------------------------
 
     def select_loop(self, idx: int) -> None:

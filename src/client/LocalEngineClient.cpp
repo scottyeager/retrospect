@@ -54,6 +54,14 @@ void LocalEngineClient::cancelPending() {
     engine_.cancelPending();
 }
 
+void LocalEngineClient::cancelPendingForLoop(int loopIndex) {
+    engine_.cancelPending(loopIndex);
+}
+
+void LocalEngineClient::undo(int loopIndex) {
+    engine_.undo(loopIndex);
+}
+
 void LocalEngineClient::scheduleScrambleOn(int loopIndex, Quantize quantize,
                                            const ScrambleParams& params) {
     engine_.scheduleScrambleOn(loopIndex, quantize, params);

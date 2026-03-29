@@ -554,6 +554,11 @@ void Tui::handleKey(int key) {
             break;
         }
 
+        // Universal undo: cancel pending if any, otherwise undo layer
+        case 'z':
+            client_.undo(-1);
+            break;
+
         // Cancel pending
         case 27: // Escape
             client_.cancelPending();

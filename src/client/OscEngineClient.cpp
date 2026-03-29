@@ -174,6 +174,16 @@ void OscEngineClient::cancelPending() {
     lo_send(serverAddr_, "/retro/cancel_pending", "");
 }
 
+void OscEngineClient::cancelPendingForLoop(int loopIndex) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/cancel_pending", "i", loopIndex);
+}
+
+void OscEngineClient::undo(int loopIndex) {
+    if (!serverAddr_) return;
+    lo_send(serverAddr_, "/retro/undo", "i", loopIndex);
+}
+
 void OscEngineClient::scheduleScrambleOn(int loopIndex, Quantize quantize,
                                           const ScrambleParams& params) {
     if (!serverAddr_) return;

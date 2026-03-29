@@ -808,10 +808,20 @@ void LoopEngine::cancelPending() {
 }
 
 void LoopEngine::cancelPending(int loopIndex) {
-    if (loopIndex >= 0 && loopIndex < maxLoops()) {
-        loops_[static_cast<size_t>(loopIndex)].clearPendingOps();
-    }
-    if (callbacks_.onStateChanged) callbacks_.onStateChanged();
+    EngineCommand cmd;
+    cmd.commandType = CommandType::CancelPending;
+    cmd.loopIndex = loopIndex;
+    enqueueCommand(cmd);
+
+    if (callbacks_.onMessage)
+        callbacks_.onMessage("Loop " + std::to_string(loopIndex + 1) + " pending ops cancelled");
+}
+
+void LoopEngine::undo(int loopIndex) {
+    EngineCommand cmd;
+    cmd.commandType = CommandType::Undo;
+    cmd.loopIndex = loopIndex;
+    enqueueCommand(cmd);
 }
 
 int LoopEngine::activeLoopCount() const {
@@ -1035,8 +1045,12 @@ void LoopEngine::drainCommands() {
                 break;
             }
             case CommandType::CancelPending: {
-                for (auto& lp : loops_) {
-                    lp.clearPendingOps();
+                if (cmd.loopIndex >= 0 && cmd.loopIndex < maxLoops()) {
+                    loops_[static_cast<size_t>(cmd.loopIndex)].clearPendingOps();
+                } else {
+                    for (auto& lp : loops_) {
+                        lp.clearPendingOps();
+                    }
                 }
                 break;
             }
@@ -1074,6 +1088,23 @@ void LoopEngine::drainCommands() {
                 if (idx < 0 || idx >= maxLoops()) break;
                 Loop& lp = loops_[static_cast<size_t>(idx)];
                 lp.setScrambleWindowDuration(cmd.value);
+                break;
+            }
+            case CommandType::Undo: {
+                forEachTarget(cmd.loopIndex, [&](int idx) {
+                    Loop& lp = loops_[static_cast<size_t>(idx)];
+                    if (lp.pendingState().hasAny()) {
+                        lp.clearPendingOps();
+                        if (callbacks_.onMessage)
+                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " pending ops cancelled");
+                    } else {
+                        lp.undoLayer();
+                        if (callbacks_.onMessage)
+                            callbacks_.onMessage("Loop " + std::to_string(idx + 1) + " undone (" +
+                                                 std::to_string(lp.activeLayerCount()) + "/" +
+                                                 std::to_string(lp.layerCount()) + " layers)");
+                    }
+                });
                 break;
             }
         }
