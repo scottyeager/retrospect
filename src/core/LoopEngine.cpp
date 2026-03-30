@@ -484,9 +484,13 @@ void LoopEngine::checkBackgroundCaptures() {
 
         auto& lp = loops_[static_cast<size_t>(bg->loopIndex)];
 
-        // Only install if the loop slot is still available.
-        // If it was re-captured or filled by another operation, discard.
-        if (!bg->cancelled.load(std::memory_order_relaxed) && lp.isEmpty()) {
+        // Install the capture unless it was cancelled by another operation.
+        if (!bg->cancelled.load(std::memory_order_relaxed)) {
+            // If the loop already has content, save it for undo and clear
+            if (!lp.isEmpty()) {
+                lp.savePreRecordSnapshot();
+                lp.clear();
+            }
             lp.loadFromCapture(std::move(bg->completedAudio));
             lp.setCrossfadeSamples(bg->crossfadeSamples);
             lp.setLengthInBars(bg->bars);
