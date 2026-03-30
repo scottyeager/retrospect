@@ -503,7 +503,9 @@ void Loop::clear() {
     stopStretchWorker();
 
     layers_.clear();
-    preRecordSnapshot_.reset();
+    // Note: preRecordSnapshot_ is intentionally NOT cleared here so that
+    // undo can restore previous content after a record/capture replaces a loop.
+    // ClearLoop explicitly resets it when the user clears a loop.
     state_ = LoopState::Empty;
     loopLength_ = 0;
     playPos_ = 0;

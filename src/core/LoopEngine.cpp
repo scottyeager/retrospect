@@ -229,6 +229,7 @@ void LoopEngine::flushDueOps(Loop& lp, int64_t currentSample) {
         case OpType::ClearLoop:
             cancelBackgroundCapture(id);
             lp.clear();
+            lp.clearPreRecordSnapshot();
             lastMessage_ = "Loop " + std::to_string(id) + " cleared";
             break;
 
@@ -545,7 +546,8 @@ void LoopEngine::fulfillRecord(Loop& lp) {
         return;
     }
 
-    // Save existing content so undo can restore it
+    // Save existing content so undo can restore it.
+    // clear() resets the snapshot, so we stash and restore it.
     lp.savePreRecordSnapshot();
     lp.clear();
 

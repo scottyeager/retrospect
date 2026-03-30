@@ -116,6 +116,9 @@ public:
     /// Whether a pre-record snapshot is available for undo.
     bool hasPreRecordSnapshot() const { return preRecordSnapshot_.has_value(); }
 
+    /// Discard the pre-record snapshot (used by explicit clear).
+    void clearPreRecordSnapshot() { preRecordSnapshot_.reset(); }
+
     /// Restore the pre-record snapshot, replacing current loop content.
     void restorePreRecordSnapshot();
 
