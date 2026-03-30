@@ -74,6 +74,8 @@ private:
                          lo_arg** argv, int argc, lo_message msg, void* user);
     static int handleSelection(const char* path, const char* types,
                                lo_arg** argv, int argc, lo_message msg, void* user);
+    static int handleInput(const char* path, const char* types,
+                           lo_arg** argv, int argc, lo_message msg, void* user);
     static void errorHandler(int num, const char* msg, const char* path);
 
     lo_server server_ = nullptr;       // Non-threaded receiver

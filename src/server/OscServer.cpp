@@ -143,7 +143,7 @@ void OscServer::pushStateTo(lo_address addr) {
                          static_cast<double>(lp.lengthSamples());
         }
 
-        lo_send(addr, "/retro/state/loop", "iidiiddih",
+        lo_send(addr, "/retro/state/loop", "iidiididh",
                 i,
                 loopStateToInt(lp.state()),
                 lp.lengthInBars(),
@@ -168,6 +168,12 @@ void OscServer::pushStateTo(lo_address addr) {
             static_cast<int>(engine_.sampleRate()),
             engine_.midiSyncEnabled() ? 1 : 0,
             engine_.midiSync().hasOutput() ? 1 : 0);
+
+    // Input channels: bitmask + threshold + count in a single message
+    lo_send(addr, "/retro/state/input", "hfi",
+            static_cast<int64_t>(engine_.liveChannelMask()),
+            engine_.liveThreshold(),
+            engine_.numInputChannels());
 
     // Selection mask
     lo_send(addr, "/retro/state/selection", "h",

@@ -30,7 +30,7 @@ OscEngineClient::OscEngineClient(const std::string& host, const std::string& por
     // Register state handlers
     lo_server_add_method(server_, "/retro/state/metronome", "iiddii",
                          handleMetronome, this);
-    lo_server_add_method(server_, "/retro/state/loop", "iidiiddih",
+    lo_server_add_method(server_, "/retro/state/loop", "iidiididh",
                          handleLoop, this);
     lo_server_add_method(server_, "/retro/state/recording", "ii",
                          handleRecording, this);
@@ -44,6 +44,8 @@ OscEngineClient::OscEngineClient(const std::string& host, const std::string& por
                          handleLog, this);
     lo_server_add_method(server_, "/retro/state/selection", "h",
                          handleSelection, this);
+    lo_server_add_method(server_, "/retro/state/input", "hfi",
+                         handleInput, this);
 
     // Initialize default snapshot
     snap_.loops.resize(8);
@@ -352,6 +354,22 @@ int OscEngineClient::handleSelection(const char*, const char*, lo_arg** argv,
                                       int, lo_message, void* user) {
     auto* self = static_cast<OscEngineClient*>(user);
     self->snap_.selectedLoopMask = static_cast<uint64_t>(argv[0]->h);
+    return 0;
+}
+
+int OscEngineClient::handleInput(const char*, const char*, lo_arg** argv,
+                                  int, lo_message, void* user) {
+    auto* self = static_cast<OscEngineClient*>(user);
+    uint64_t mask = static_cast<uint64_t>(argv[0]->h);
+    self->snap_.liveThreshold = argv[1]->f;
+    int numChannels = argv[2]->i;
+
+    self->snap_.inputChannels.resize(static_cast<size_t>(numChannels));
+    for (int ch = 0; ch < numChannels; ++ch) {
+        auto& ic = self->snap_.inputChannels[static_cast<size_t>(ch)];
+        ic.live = (mask >> ch) & 1;
+        ic.peakLevel = 0.0f;  // Not sent over OSC (display-only)
+    }
     return 0;
 }
 
